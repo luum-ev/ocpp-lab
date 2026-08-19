@@ -60,6 +60,8 @@ func (f *fakeCSMS) handler(t *testing.T) http.HandlerFunc {
 			switch frame.Action {
 			case "BootNotification":
 				payload = ocpp.BootNotificationConf{Status: "Accepted", CurrentTime: time.Now().UTC().Format(time.RFC3339), Interval: 300}
+			case "Authorize":
+				payload = ocpp.AuthorizeConf{IDTagInfo: ocpp.IDTagInfo{Status: "Accepted"}}
 			case "StartTransaction":
 				f.mu.Lock()
 				f.txSeq++
