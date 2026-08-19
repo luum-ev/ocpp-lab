@@ -191,3 +191,15 @@ func TestFaultShowsUpInStatus(t *testing.T) {
 		t.Fatalf("connector 2 should be Faulted, got %v", second["state"])
 	}
 }
+
+func TestWebUIIsServed(t *testing.T) {
+	api, _ := startAPI(t)
+	resp, err := http.Get(api.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("web UI: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+}

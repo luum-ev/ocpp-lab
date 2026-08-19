@@ -4,6 +4,7 @@
 package api
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -14,6 +15,12 @@ import (
 	"github.com/luum-ev/ocpp-lab/internal/fleet"
 	"github.com/luum-ev/ocpp-lab/internal/station"
 )
+
+// The web UI ships inside the binary — one file, no build step, and it can
+// only do what the API can do, because it IS the API's client.
+//
+//go:embed web/index.html
+var webUI embed.FS
 
 type Server struct {
 	Fleet *fleet.Fleet
@@ -26,6 +33,15 @@ func (s *Server) Handler() http.Handler {
 	// shell, so health is HTTP or nothing.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		page, err := webUI.ReadFile("web/index.html")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(page)
 	})
 	mux.HandleFunc("GET /stations", s.listStations)
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/plug", s.connectorAction("plug"))

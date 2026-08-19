@@ -30,6 +30,14 @@ cp fleet.example.yaml fleet.yaml   # point csms: at your platform
 ./ocpp-lab online  SIM-DC-001         # queue flushes, in order
 ```
 
+## Web UI
+
+The binary ships a **thin web UI** at `http://localhost:8887/` — the whole
+fleet at a glance, with plug/charge/stop/fault per connector and
+kill/offline/online per station. It is deliberately a dumb client of the same
+REST API the CLI uses (one file, embedded, no build step): every button is one
+REST call, so anything you click, CI can replay with curl.
+
 ## Design
 
 * **Nouns in YAML, verbs in the API.** The fleet file is declarative desired
