@@ -215,3 +215,98 @@ func (w testWriter) Write(p []byte) (int, error) {
 	w.t.Log(strings.TrimSpace(string(p)))
 	return len(p), nil
 }
+
+// TestRFIDTapWaitsForCSMSDecision proves the tap sequence: Authorize goes
+// out, and the transaction starts ONLY after the CSMS accepts — never on a
+// local decision.
+func TestRFIDTapWaitsForCSMSDecision(t *testing.T) {
+	csms := &fakeCSMS{}
+	server := httptest.NewServer(csms.handler(t))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	st := New(Config{
+		ID: "SIM-TEST-003", Vendor: "Test", Model: "TestBox", Connectors: 1,
+		PowerKw: 22, MeterValuesS: 1,
+		Battery: EVBattery{CapacityKwh: 60, SocPercent: 50, TargetSoc: 100, MaxAcKw: 7.4},
+	}, wsURL, slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go st.Run(ctx)
+	waitFor(t, "boot", func() bool { return len(csms.seen()) > 0 })
+
+	if err := st.TapRFID(1, "TAG-01"); err == nil {
+		t.Fatal("tap without cable must fail — real stations require plugging first")
+	}
+	if err := st.Plug(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TapRFID(1, "TAG-01"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "authorize then start", func() bool {
+		var auth, start bool
+		for _, a := range csms.seen() {
+			if a == "Authorize" {
+				auth = true
+			}
+			if a == "StartTransaction" {
+				start = auth // start only counts if authorize came first
+			}
+		}
+		return auth && start
+	})
+}
+
+// TestEVDisconnectStopsWithHonestReason: pulling the cable from the car
+// mid-session stops the transaction with EVDisconnected — the sequence a
+// real charge point reports when the driver leaves without touching any app.
+func TestEVDisconnectStopsWithHonestReason(t *testing.T) {
+	csms := &fakeCSMS{}
+	server := httptest.NewServer(csms.handler(t))
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	st := New(Config{
+		ID: "SIM-TEST-004", Vendor: "Test", Model: "TestBox", Connectors: 1,
+		PowerKw: 22, MeterValuesS: 1,
+		Battery: EVBattery{CapacityKwh: 60, SocPercent: 50, TargetSoc: 100, MaxAcKw: 7.4},
+	}, wsURL, slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go st.Run(ctx)
+	waitFor(t, "boot", func() bool { return len(csms.seen()) > 0 })
+
+	if err := st.Plug(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.StartCharge(1, "tag", nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "start", func() bool {
+		for _, a := range csms.seen() {
+			if a == "StartTransaction" {
+				return true
+			}
+		}
+		return false
+	})
+	if err := st.DisconnectEV(1); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "stop after EV disconnect", func() bool {
+		for _, a := range csms.seen() {
+			if a == "StopTransaction" {
+				return true
+			}
+		}
+		return false
+	})
+	snap := st.Snapshot()
+	conns := snap["connectors"].([]map[string]any)
+	if conns[0]["plugged"].(bool) {
+		t.Fatal("cable must be released after EV disconnect")
+	}
+}

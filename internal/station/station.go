@@ -58,6 +58,8 @@ type Station struct {
 	queue [][]byte
 	// profileLimitW per connector id, set by SetChargingProfile.
 	profileLimitW map[int]float64
+	// pendingTap is an RFID tap waiting for its Authorize answer.
+	pendingTap *pendingTap
 
 	log *slog.Logger
 }
@@ -268,6 +270,33 @@ func (s *Station) startChargeLocked(connector int, idTag string, battery *EVBatt
 	return nil
 }
 
+// TapRFID simulates a card tap: the station sends Authorize and, when the
+// CSMS accepts AND a cable is plugged, starts the transaction — the exact
+// sequence a real charge point performs. The authorization decision is
+// NEVER local (a charge point that decides is a charge point that gives
+// energy away); the CSMS answer arrives asynchronously, so the outcome is
+// observed via the CSMS side or the station snapshot.
+func (s *Station) TapRFID(connector int, idTag string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.connectorLocked(connector)
+	if err != nil {
+		return err
+	}
+	if !c.Plugged {
+		return fmt.Errorf("connector %d: tap with no cable — plug first, like at a real station", connector)
+	}
+	if c.Session != nil {
+		return fmt.Errorf("connector %d: transaction already running", connector)
+	}
+	s.queueCallLocked("Authorize", ocpp.AuthorizeReq{IDTag: idTag})
+	s.flushQueueLocked()
+	// The start follows the Authorize answer — handled in handleCallResult,
+	// which needs to know a tap is pending for this connector.
+	s.pendingTap = &pendingTap{Connector: connector, IDTag: idTag}
+	return nil
+}
+
 // StopCharge ends the transaction with the given reason (Local, Remote,
 // EVDisconnected...).
 func (s *Station) StopCharge(connector int, reason string) error {
@@ -294,6 +323,32 @@ func (s *Station) stopChargeLocked(connector int, reason string) error {
 	})
 	c.Session = nil
 	c.State = Finishing
+	s.queueStatusLocked(c)
+	s.flushQueueLocked()
+	return nil
+}
+
+// DisconnectEV simulates the driver unlocking the car and pulling the
+// cable FROM THE VEHICLE SIDE — possible at any time on a real session.
+// The charge point notices the pilot signal drop, stops the transaction
+// with reason EVDisconnected and releases the plug.
+func (s *Station) DisconnectEV(connector int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.connectorLocked(connector)
+	if err != nil {
+		return err
+	}
+	if !c.Plugged {
+		return fmt.Errorf("connector %d: no cable plugged", connector)
+	}
+	if c.Session != nil {
+		if err := s.stopChargeLocked(connector, "EVDisconnected"); err != nil {
+			return err
+		}
+	}
+	c.Plugged = false
+	c.State = Available
 	s.queueStatusLocked(c)
 	s.flushQueueLocked()
 	return nil
@@ -508,6 +563,25 @@ func (s *Station) handleCallResult(f ocpp.Frame) error {
 		if conf.Interval > 0 {
 			s.log.Info("boot accepted", "status", conf.Status, "heartbeatS", conf.Interval)
 		}
+	case "Authorize":
+		var conf ocpp.AuthorizeConf
+		if err := json.Unmarshal(f.Payload, &conf); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		tap := s.pendingTap
+		s.pendingTap = nil
+		if tap != nil {
+			if conf.IDTagInfo.Status == "Accepted" {
+				s.log.Info("rfid tap authorized — starting", "idTag", tap.IDTag)
+				if err := s.startChargeLocked(tap.Connector, tap.IDTag, nil); err != nil {
+					s.log.Warn("tap start failed", "error", err)
+				}
+			} else {
+				s.log.Info("rfid tap refused by CSMS", "idTag", tap.IDTag, "status", conf.IDTagInfo.Status)
+			}
+		}
+		s.mu.Unlock()
 	}
 	return nil
 }
@@ -732,6 +806,11 @@ func (s *Station) handleCall(f ocpp.Frame) error {
 		return nil
 	}
 	return s.conn.WriteMessage(websocket.TextMessage, raw)
+}
+
+type pendingTap struct {
+	Connector int
+	IDTag     string
 }
 
 func ptr[T any](v T) *T { return &v }
