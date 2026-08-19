@@ -1,0 +1,9 @@
+apiVersion: v2
+name: ocpp-lab
+description: OCPP 1.6J charge point fleet emulator — simulated chargers for testing CSMS platforms
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/luum-ev/ocpp-lab
+sources:
+  - https://github.com/luum-ev/ocpp-lab

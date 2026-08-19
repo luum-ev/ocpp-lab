@@ -62,10 +62,50 @@ OCPP 2.0.1 is a planned major, not a v1 stretch goal.
 
 ## Container
 
+The image is published to GHCR on every merge to `main`
+(`ghcr.io/luum-ev/ocpp-lab`, linux/amd64 + arm64). Configuration is
+environment-first so the same image runs everywhere:
+
+| Env var | Default | Meaning |
+| :--- | :--- | :--- |
+| `OCPP_LAB_FLEET` | `/etc/ocpp-lab/fleet.yaml` | fleet file path (mount a volume or a ConfigMap there) |
+| `OCPP_LAB_CSMS` | — | overrides the fleet file's `csms` URL — the same fleet file then serves every environment |
+| `OCPP_LAB_LISTEN` | `:8887` | control API address |
+| `OCPP_LAB_API` | `http://localhost:8887` | base URL used by the CLI client commands |
+
+Flags always win over env vars; env vars win over defaults.
+
 ```bash
-docker build -t ocpp-lab .
-docker run -v $PWD/fleet.yaml:/fleet.yaml -p 8887:8887 ocpp-lab serve --fleet /fleet.yaml
+# docker or podman — mount the fleet, point at your CSMS
+docker run -v $PWD/fleet.yaml:/etc/ocpp-lab/fleet.yaml \
+  -e OCPP_LAB_CSMS=ws://host.docker.internal:9000/ocpp \
+  -p 8887:8887 ghcr.io/luum-ev/ocpp-lab
+
+curl -s localhost:8887/healthz     # liveness for k8s probes too
 ```
 
-See [AGENTS.md](AGENTS.md) for the contributor guide — starting with the
+## Kubernetes (Helm)
+
+The chart lives in [`charts/ocpp-lab`](charts/ocpp-lab) and is published as an
+**OCI artifact** on every release tag:
+
+```bash
+# From the published OCI registry:
+helm install sim oci://ghcr.io/luum-ev/charts/ocpp-lab \
+  --set csms=ws://my-csms.dev.svc:9000/ocpp
+
+# Or straight from a checkout (minikube-friendly):
+helm install sim charts/ocpp-lab --set csms=ws://my-csms.dev.svc:9000/ocpp
+
+kubectl port-forward svc/sim 8887:8887
+./ocpp-lab status   # or curl localhost:8887/stations
+```
+
+The fleet is a value (`.Values.fleet`) rendered into a ConfigMap and mounted
+at `/etc/ocpp-lab/fleet.yaml`; the CSMS endpoint is `.Values.csms`, injected
+as `OCPP_LAB_CSMS` — one image, one chart, any environment. A fleet change
+rolls the pod (checksum annotation), and the stations reconnect and boot.
+
+Licensed under [Apache-2.0](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md)
+and [AGENTS.md](AGENTS.md) for the contributor guide — starting with the
 mandatory language policy (everything in English) and the engineering rules.

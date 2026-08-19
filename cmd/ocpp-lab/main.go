@@ -73,14 +73,24 @@ func usage() {
 Client commands accept --api http://localhost:8887 (default).`)
 }
 
+// envOr reads an environment variable with a default — the container
+// contract: flags win over env vars, env vars win over defaults.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func serve(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	fleetPath := fs.String("fleet", "fleet.yaml", "fleet file (declarative station list)")
-	listen := fs.String("listen", ":8887", "control API address")
+	fleetPath := fs.String("fleet", envOr("OCPP_LAB_FLEET", "fleet.yaml"), "fleet file (declarative station list; env OCPP_LAB_FLEET)")
+	listen := fs.String("listen", envOr("OCPP_LAB_LISTEN", ":8887"), "control API address (env OCPP_LAB_LISTEN)")
+	csms := fs.String("csms", os.Getenv("OCPP_LAB_CSMS"), "override the fleet file's csms URL (env OCPP_LAB_CSMS) — the same fleet ConfigMap then serves every environment")
 	_ = fs.Parse(args)
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	fl, err := fleet.Load(*fleetPath, log)
+	fl, err := fleet.Load(*fleetPath, *csms, log)
 	if err != nil {
 		log.Error("cannot load fleet", "error", err)
 		os.Exit(1)
@@ -117,7 +127,7 @@ func requireTarget(args []string) [2]string {
 
 func client(method, path string, args []string, body string) {
 	fs := flag.NewFlagSet("client", flag.ExitOnError)
-	apiURL := fs.String("api", "http://localhost:8887", "control API base URL")
+	apiURL := fs.String("api", envOr("OCPP_LAB_API", "http://localhost:8887"), "control API base URL (env OCPP_LAB_API)")
 	_ = fs.Parse(args)
 
 	var reader io.Reader

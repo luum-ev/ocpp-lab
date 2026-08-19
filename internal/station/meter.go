@@ -13,14 +13,14 @@ import (
 // lines don't test anything: DC power tapers as SoC climbs, sessions end when
 // the target SoC is reached, and only DC stations can SEE any of this.
 type EVBattery struct {
-	CapacityKwh float64
-	SocPercent  float64
-	TargetSoc   float64
+	CapacityKwh float64 `yaml:"capacityKwh" json:"capacityKwh"`
+	SocPercent  float64 `yaml:"socPercent" json:"socPercent"`
+	TargetSoc   float64 `yaml:"targetSoc" json:"targetSoc"`
 	// MaxAcKw is the car's onboard charger limit — the reason a 22 kW AC
 	// station often delivers 7.4 kW: the bottleneck is in the car.
-	MaxAcKw float64
+	MaxAcKw float64 `yaml:"maxAcKw" json:"maxAcKw"`
 	// MaxDcKw is the car's DC acceptance limit at low SoC.
-	MaxDcKw float64
+	MaxDcKw float64 `yaml:"maxDcKw" json:"maxDcKw"`
 }
 
 // Session is one charging transaction in progress.

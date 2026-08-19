@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ocpp-lab.fullname" . }}
+  labels: {{- include "ocpp-lab.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {{- include "ocpp-lab.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "ocpp-lab.selectorLabels" . | nindent 8 }}
+      annotations:
+        # A fleet change must restart the pod — stations reconnect and boot.
+        checksum/fleet: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      containers:
+        - name: ocpp-lab
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: OCPP_LAB_CSMS
+              value: {{ .Values.csms | quote }}
+            - name: OCPP_LAB_FLEET
+              value: /etc/ocpp-lab/fleet.yaml
+          ports:
+            - name: api
+              containerPort: 8887
+          livenessProbe:
+            httpGet: { path: /healthz, port: api }
+          readinessProbe:
+            httpGet: { path: /healthz, port: api }
+          volumeMounts:
+            - name: fleet
+              mountPath: /etc/ocpp-lab
+              readOnly: true
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: fleet
+          configMap:
+            name: {{ include "ocpp-lab.fullname" . }}-fleet

@@ -29,7 +29,10 @@ type Fleet struct {
 	log      *slog.Logger
 }
 
-func Load(path string, log *slog.Logger) (*Fleet, error) {
+// Load reads the fleet file. csmsOverride, when non-empty, replaces the
+// file's csms URL — the fleet file stays generic (a ConfigMap shared by every
+// environment) and the endpoint comes from the environment.
+func Load(path string, csmsOverride string, log *slog.Logger) (*Fleet, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read fleet file: %w", err)
@@ -38,8 +41,11 @@ func Load(path string, log *slog.Logger) (*Fleet, error) {
 	if err := yaml.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("parse fleet file: %w", err)
 	}
+	if csmsOverride != "" {
+		f.CSMS = csmsOverride
+	}
 	if f.CSMS == "" {
-		return nil, fmt.Errorf("fleet file: csms URL is required")
+		return nil, fmt.Errorf("fleet file: csms URL is required (set it in the file or via OCPP_LAB_CSMS)")
 	}
 	fl := &Fleet{CSMS: f.CSMS, stations: map[string]*station.Station{}, log: log}
 	for _, cfg := range f.Stations {

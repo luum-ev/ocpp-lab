@@ -22,6 +22,11 @@ type Server struct {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	// Liveness for Kubernetes and container healthchecks — distroless has no
+	// shell, so health is HTTP or nothing.
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
 	mux.HandleFunc("GET /stations", s.listStations)
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/plug", s.connectorAction("plug"))
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/unplug", s.connectorAction("unplug"))
