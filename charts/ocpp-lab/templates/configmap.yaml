@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ocpp-lab.fullname" . }}-fleet
+  labels: {{- include "ocpp-lab.labels" . | nindent 4 }}
+data:
+  # The csms key is a placeholder — OCPP_LAB_CSMS (from .Values.csms) wins.
+  fleet.yaml: |
+    csms: {{ .Values.csms }}
+{{ toYaml .Values.fleet | indent 4 }}

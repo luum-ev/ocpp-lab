@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ocpp-lab</title>
+<style>
+  /* Deliberately dependency-free and neutral: this page is a thin client of
+     the REST API — if it can do something the API can't, that is a bug. */
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: #101214; color: #e6e8ea; }
+  header { display: flex; align-items: baseline; gap: 12px; padding: 18px 24px; border-bottom: 1px solid #26292d; }
+  h1 { margin: 0; font-size: 18px; letter-spacing: .02em; }
+  header small { color: #8b929a; }
+  main { padding: 24px; display: grid; gap: 16px; max-width: 1100px; }
+  .station { border: 1px solid #26292d; border-radius: 10px; background: #16181b; padding: 16px 18px; }
+  .station-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .station-head b { font-size: 15px; }
+  .tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #3a3f45; color: #aab1b8; }
+  .tag.ok { color: #46d19a; border-color: #2c5c48; }
+  .tag.bad { color: #ff6b6b; border-color: #6b3232; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid #202327; }
+  .state { min-width: 96px; font-weight: 600; }
+  .state.Charging { color: #46d19a; }
+  .state.Faulted { color: #ff6b6b; }
+  .state.Preparing { color: #f0b429; }
+  .meta { color: #8b929a; font-size: 12.5px; min-width: 200px; }
+  button { font: inherit; font-size: 12.5px; padding: 5px 12px; border-radius: 999px; border: 1px solid #3a3f45; background: none; color: #e6e8ea; cursor: pointer; }
+  button:hover { border-color: #e6e8ea; }
+  button.danger { color: #ff6b6b; border-color: #6b3232; }
+  .spacer { margin-left: auto; display: flex; gap: 8px; }
+  #error { color: #ff6b6b; padding: 0 24px; min-height: 20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ocpp-lab</h1>
+  <small>simulated OCPP 1.6J fleet — every button below is one REST call</small>
+</header>
+<div id="error"></div>
+<main id="fleet">loading…</main>
+<script>
+async function act(path) {
+  const res = await fetch(path, { method: 'POST', body: '{}' });
+  const body = await res.json().catch(() => ({}));
+  document.getElementById('error').textContent = res.ok ? '' : (body.error || res.statusText);
+  await refresh();
+}
+
+function connectorRow(stationId, c) {
+  const session = c.session
+    ? `tx ${c.session.transactionId} · ${c.session.energyWh} Wh` +
+      (c.session.dcReportsSoc ? ` · SoC ${c.session.socPercent.toFixed(1)}%` : '')
+    : `meter ${c.meterWh} Wh`;
+  const base = `/stations/${stationId}/connectors/${c.id}`;
+  return `<div class="row">
+    <span class="state ${c.state}">${c.id} · ${c.state}</span>
+    <span class="meta">${c.plugged ? 'cable plugged' : 'no cable'} · ${session}</span>
+    <span class="spacer">
+      ${c.plugged ? '' : `<button onclick="act('${base}/plug')">plug</button>`}
+      ${c.plugged && !c.session ? `<button onclick="act('${base}/unplug')">unplug</button>
+        <button onclick="act('${base}/charge')">charge</button>` : ''}
+      ${c.session ? `<button onclick="act('${base}/stop')">stop</button>` : ''}
+      <button class="danger" onclick="act('${base}/fault')">fault</button>
+    </span>
+  </div>`;
+}
+
+function stationCard(s) {
+  return `<section class="station">
+    <div class="station-head">
+      <b>${s.id}</b>
+      <span class="tag">${s.model}</span>
+      <span class="tag">${s.dc ? 'DC' : 'AC'} · ${s.powerKw} kW</span>
+      <span class="tag ${s.online ? 'ok' : 'bad'}">${s.online ? 'online' : 'offline'}</span>
+      ${s.queued ? `<span class="tag">${s.queued} queued</span>` : ''}
+      <span class="spacer">
+        <button onclick="act('/stations/${s.id}/${s.online ? 'offline' : 'online'}')">${s.online ? 'go offline' : 'go online'}</button>
+        <button class="danger" onclick="act('/stations/${s.id}/kill')">kill</button>
+      </span>
+    </div>
+    ${s.connectors.map((c) => connectorRow(s.id, c)).join('')}
+  </section>`;
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/stations');
+    const stations = await res.json();
+    document.getElementById('fleet').innerHTML = stations.map(stationCard).join('');
+  } catch (err) {
+    document.getElementById('error').textContent = 'control API unreachable: ' + err.message;
+  }
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

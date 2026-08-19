@@ -1,0 +1,43 @@
+# ocpp-lab fleet file — the DECLARATIVE side: which stations exist.
+# Runtime actions (plug, charge, kill) go through the API/CLI instead.
+csms: ws://localhost:9000/ocpp
+
+stations:
+  # A three-phase AC station: per-phase currents in MeterValues, and NO SoC —
+  # a Type 2 cable has no data link to the car, so an AC station cannot know it.
+  - id: SIM-AC-001
+    vendor: WEG
+    model: WEMOB Parking 22
+    serial: WEG22-SIM001
+    firmware: 2.4.1
+    connectors: 2
+    powerKw: 22
+    dc: false
+    phases: 3
+    heartbeatS: 300
+    meterValuesS: 30
+    battery:
+      capacityKwh: 60
+      socPercent: 35
+      targetSoc: 100
+      maxAcKw: 7.4    # the car's onboard charger is the real AC bottleneck
+      maxDcKw: 90
+
+  # A DC fast charger: CCS talks to the BMS, so MeterValues carry SoC, DC
+  # voltage and DC current — and power TAPERS above 80% SoC, like real life.
+  - id: SIM-DC-001
+    vendor: ABB
+    model: Terra 54
+    serial: ABB54-SIM001
+    firmware: 3.1.0
+    connectors: 2
+    powerKw: 50
+    dc: true
+    heartbeatS: 300
+    meterValuesS: 15
+    battery:
+      capacityKwh: 60
+      socPercent: 20
+      targetSoc: 80    # DC sessions usually stop at 80% — the taper says why
+      maxAcKw: 11
+      maxDcKw: 90

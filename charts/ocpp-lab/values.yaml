@@ -1,0 +1,39 @@
+image:
+  repository: ghcr.io/luum-ev/ocpp-lab
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# The CSMS your simulated fleet connects to. This is the one value that
+# changes per environment — the fleet below usually does not.
+csms: ws://my-csms:9000/ocpp
+
+# The declarative fleet — rendered into a ConfigMap and mounted at
+# /etc/ocpp-lab/fleet.yaml. The csms key inside is overridden by .Values.csms
+# via the OCPP_LAB_CSMS env var, so you may omit it here.
+fleet:
+  stations:
+    - id: SIM-AC-001
+      vendor: WEG
+      model: WEMOB Parking 22
+      connectors: 2
+      powerKw: 22
+      dc: false
+      phases: 3
+      meterValuesS: 30
+      battery: { capacityKwh: 60, socPercent: 35, targetSoc: 100, maxAcKw: 7.4, maxDcKw: 90 }
+    - id: SIM-DC-001
+      vendor: ABB
+      model: Terra 54
+      connectors: 2
+      powerKw: 50
+      dc: true
+      meterValuesS: 15
+      battery: { capacityKwh: 60, socPercent: 20, targetSoc: 80, maxAcKw: 11, maxDcKw: 90 }
+
+service:
+  type: ClusterIP
+  port: 8887
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 256Mi }
