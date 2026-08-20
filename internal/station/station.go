@@ -27,9 +27,9 @@ type Config struct {
 	PowerKw    float64 `yaml:"powerKw"`
 	DC         bool    `yaml:"dc"`
 	// Phases matters for AC only (per-phase currents in MeterValues).
-	Phases          int `yaml:"phases"`
-	HeartbeatS      int `yaml:"heartbeatS"`
-	MeterValuesS    int `yaml:"meterValuesS"`
+	Phases       int `yaml:"phases"`
+	HeartbeatS   int `yaml:"heartbeatS"`
+	MeterValuesS int `yaml:"meterValuesS"`
 	// Battery is the default simulated EV plugged into this station.
 	Battery EVBattery `yaml:"battery"`
 }
@@ -93,7 +93,29 @@ func New(cfg Config, csms string, log *slog.Logger) *Station {
 
 // Run is the station's life: connect, boot, then tick until ctx ends. It
 // reconnects with backoff — a real charge point never gives up either.
+//
+// The physics ticker lives HERE, not inside the connection loop: charging is
+// local, only the telemetry link is not. A car keeps taking energy while the
+// CSMS is unreachable — the MeterValues just pile up in the offline queue and
+// travel on reconnect, which is exactly the store-and-forward the spec asks
+// for. Tying the meter to the socket would freeze the car whenever the
+// network blinks, and every energy figure after an outage would be a lie.
 func (s *Station) Run(ctx context.Context) {
+	meter := time.NewTicker(time.Duration(s.Config.MeterValuesS) * time.Second)
+	defer meter.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-meter.C:
+				if err := s.tickSessions(); err != nil {
+					s.log.Warn("session tick failed", "error", err)
+				}
+			}
+		}
+	}()
+
 	backoff := time.Second
 	for ctx.Err() == nil {
 		if !s.isWantOnline() {
@@ -149,9 +171,7 @@ func (s *Station) connectAndServe(ctx context.Context) error {
 	s.mu.Unlock()
 
 	heartbeat := time.NewTicker(time.Duration(s.Config.HeartbeatS) * time.Second)
-	meter := time.NewTicker(time.Duration(s.Config.MeterValuesS) * time.Second)
 	defer heartbeat.Stop()
-	defer meter.Stop()
 
 	readErr := make(chan error, 1)
 	frames := make(chan []byte, 16)
@@ -178,10 +198,6 @@ func (s *Station) connectAndServe(ctx context.Context) error {
 			}
 		case <-heartbeat.C:
 			if err := s.sendCall("Heartbeat", ocpp.HeartbeatReq{}); err != nil {
-				return err
-			}
-		case <-meter.C:
-			if err := s.tickSessions(); err != nil {
 				return err
 			}
 		}
