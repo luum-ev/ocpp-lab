@@ -47,6 +47,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/plug", s.connectorAction("plug"))
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/unplug", s.connectorAction("unplug"))
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/charge", s.charge)
+	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/rfid", s.rfid)
+	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/ev-disconnect", s.connectorAction("ev-disconnect"))
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/stop", s.connectorAction("stop"))
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/fault", s.fault)
 	mux.HandleFunc("POST /stations/{id}/kill", s.stationAction("kill"))
@@ -94,6 +96,8 @@ func (s *Server) connectorAction(action string) http.HandlerFunc {
 			err = st.Unplug(n)
 		case "stop":
 			err = st.StopCharge(n, "Local")
+		case "ev-disconnect":
+			err = st.DisconnectEV(n)
 		}
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
@@ -131,6 +135,33 @@ func (s *Server) charge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, st.Snapshot())
+}
+
+type rfidRequest struct {
+	IDTag string `json:"idTag"`
+}
+
+// rfid simulates a card tap: Authorize goes to the CSMS, and the start
+// follows only if the CSMS accepts — the decision is never local.
+func (s *Server) rfid(w http.ResponseWriter, r *http.Request) {
+	st, ok := s.station(w, r)
+	if !ok {
+		return
+	}
+	n, ok := s.connector(w, r)
+	if !ok {
+		return
+	}
+	var req rfidRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IDTag == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf(`body expected: {"idTag":"..."}`))
+		return
+	}
+	if err := st.TapRFID(n, req.IDTag); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "tap sent — outcome follows the CSMS Authorize answer"})
 }
 
 type faultRequest struct {

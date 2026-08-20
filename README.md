@@ -26,6 +26,10 @@ cp fleet.example.yaml fleet.yaml   # point csms: at your platform
 ./ocpp-lab plug   SIM-DC-001/1
 ./ocpp-lab charge SIM-DC-001/1        # MeterValues with SoC start flowing
 ./ocpp-lab kill   SIM-AC-001          # TCP drop, no Close frame
+# RFID tap (Authorize first; starts only if the CSMS accepts) and the
+# driver pulling the cable from the CAR mid-session:
+curl -X POST localhost:8887/stations/SIM-AC-001/connectors/1/rfid -d '{"idTag":"TAG-01"}'
+curl -X POST localhost:8887/stations/SIM-AC-001/connectors/1/ev-disconnect
 ./ocpp-lab offline SIM-DC-001         # sessions keep running, messages queue
 ./ocpp-lab online  SIM-DC-001         # queue flushes, in order
 ```
