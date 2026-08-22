@@ -67,8 +67,32 @@ OCPP **1.6J only**. Implemented: `BootNotification`, `Heartbeat`,
 (AC: per-phase `Current.Import`; DC: `SoC`, `Voltage`, `Current.Import`),
 and inbound `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`,
 `UnlockConnector`, `ChangeAvailability`, `TriggerMessage`,
-`Get/ChangeConfiguration`, `SetChargingProfile`, `ClearChargingProfile`.
+`Get/ChangeConfiguration`, `SetChargingProfile`, `ClearChargingProfile`,
+`ReserveNow`, `CancelReservation`.
 Everything else answers a proper `NotImplemented` CALLERROR.
+
+### Reservations
+
+`ReserveNow` puts the connector in `Reserved` and the station itself refuses a
+transaction from any other `idTag` — at the **start**, not at the cable, because
+a real station cannot stop a hand from inserting a plug.
+
+Two properties worth knowing when you test a CSMS against this:
+
+* **The station expires its own holds**, on the physics tick. Expiry does not
+  depend on the CSMS sending `CancelReservation`, so a network partition never
+  leaves a connector held with nobody able to free it.
+* **`expiryDate` is mandatory.** A missing or past expiry is `Rejected`. A CSMS
+  that omits it would otherwise hold the connector forever and discover its own
+  bug in the field.
+
+The full status set is reachable: `Occupied` when a cable is in or someone else
+holds it, `Faulted` and `Unavailable` for the states where the connector cannot
+serve anyone, and a repeated `reservationId` is treated as a retry — it updates
+the hold instead of failing. A status a test can never observe teaches nothing.
+
+The current hold shows up in `GET /stations` under each connector, so a test can
+assert on the reservation itself instead of on side effects.
 
 OCPP 2.0.1 is a planned major, not a v1 stretch goal.
 

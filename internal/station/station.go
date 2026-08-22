@@ -257,6 +257,20 @@ func (s *Station) startChargeLocked(connector int, idTag string, battery *EVBatt
 	if c.Session != nil {
 		return fmt.Errorf("connector %d: transaction already running", connector)
 	}
+	/* THE RESERVATION IS ENFORCED AT THE TRANSACTION — not at the cable, and
+	   not at Authorize. A real station cannot stop a hand from inserting a
+	   plug, and OCPP 1.6's Authorize.req carries no connectorId, so the start
+	   is the only step that knows both the spot and the credential. */
+	if c.ReservationBlocks(idTag, time.Now()) {
+		return fmt.Errorf("connector %d: reserved for another idTag until %s",
+			connector, c.Reservation.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	/* THE RESERVATION ENDS WHEN THE TRANSACTION STARTS (OCPP 1.6 §3.13): it
+	   did its job. Keeping it alive past the start is not harmless — the
+	   connector goes back to Reserved when the session ends, and the spot is
+	   held by a reservation nobody is waiting on. Found by the e2e, which is
+	   why the e2e exists. */
+	c.Reservation = nil
 	b := s.Config.Battery
 	if battery != nil {
 		b = *battery
@@ -304,6 +318,14 @@ func (s *Station) TapRFID(connector int, idTag string) error {
 	}
 	if c.Session != nil {
 		return fmt.Errorf("connector %d: transaction already running", connector)
+	}
+	/* THE TAP PATH NEEDS THE SAME CHECK, and here the reason is sharper: this
+	   path asks the CSMS through Authorize, and Authorize has no connectorId.
+	   If the station did not refuse locally, a stranger's card would open a
+	   transaction on a reserved spot with a perfectly valid "Accepted". */
+	if c.ReservationBlocks(idTag, time.Now()) {
+		return fmt.Errorf("connector %d: reserved for another idTag until %s",
+			connector, c.Reservation.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	s.queueCallLocked("Authorize", ocpp.AuthorizeReq{IDTag: idTag})
 	s.flushQueueLocked()
@@ -428,6 +450,16 @@ func (s *Station) Snapshot() map[string]any {
 		entry := map[string]any{
 			"id": c.ID, "state": c.State, "plugged": c.Plugged, "meterWh": c.MeterWh,
 		}
+		/* The reservation is in the snapshot because a test that cannot see it
+		   can only assert on side effects — and asserting on side effects is
+		   how a test passes while the feature is broken. */
+		if c.Reservation != nil {
+			entry["reservation"] = map[string]any{
+				"id":        c.Reservation.ID,
+				"idTag":     c.Reservation.IDTag,
+				"expiresAt": c.Reservation.ExpiresAt.UTC().Format(time.RFC3339),
+			}
+		}
 		if c.Session != nil {
 			entry["session"] = map[string]any{
 				"transactionId": c.Session.TransactionID,
@@ -464,6 +496,11 @@ func (s *Station) tickSessions() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dt := time.Duration(s.Config.MeterValuesS) * time.Second
+	/* Reservations expire on the SAME tick as the physics, because expiry is
+	   time passing — exactly like energy. Putting it on the connection loop
+	   would mean a held connector never frees itself while offline, which is
+	   the one situation the station has to handle alone. */
+	s.expireReservationsLocked(time.Now())
 	for _, c := range s.connectors {
 		if c.Session == nil {
 			continue
@@ -674,6 +711,45 @@ func (s *Station) handleCall(f ocpp.Frame) error {
 		}
 		return nil
 
+	case "ReserveNow":
+		var req ocpp.ReserveNowReq
+		if err := json.Unmarshal(f.Payload, &req); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		status := s.reserveLocked(req)
+		s.mu.Unlock()
+		if status != "Accepted" {
+			s.log.Info("reservation refused", "connector", req.ConnectorID, "status", status)
+		}
+		return respond(ocpp.ReserveNowConf{Status: status})
+
+	case "CancelReservation":
+		var req ocpp.CancelReservationReq
+		if err := json.Unmarshal(f.Payload, &req); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		status := "Rejected"
+		for _, c := range s.connectors {
+			if c.Reservation != nil && c.Reservation.ID == req.ReservationID {
+				c.Reservation = nil
+				// Back to what the CABLE says, not blindly to Available: the
+				// driver may already be plugged in and waiting.
+				if c.Plugged {
+					c.State = Preparing
+				} else {
+					c.State = Available
+				}
+				s.queueStatusLocked(c)
+				s.flushQueueLocked()
+				status = "Accepted"
+				break
+			}
+		}
+		s.mu.Unlock()
+		return respond(ocpp.CancelReservationConf{Status: status})
+
 	case "UnlockConnector":
 		var req ocpp.UnlockConnectorReq
 		if err := json.Unmarshal(f.Payload, &req); err != nil {
@@ -830,3 +906,83 @@ type pendingTap struct {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// reserveLocked answers ReserveNow with the spec's status set.
+//
+// Every rejection here mirrors something a real station does, because a status
+// the CSMS can never observe teaches the CSMS nothing:
+//
+//   - `Rejected` for a missing expiry. The spec requires `expiryDate`, and a
+//     station that accepted the omission would hold the connector forever —
+//     the CSMS would only discover its own bug in the field.
+//   - `Occupied` when a cable is in or a transaction is running. Reserving over
+//     a car that is charging promises a spot that is taken right now.
+//   - `Faulted` and `Unavailable` for the states where the connector cannot
+//     serve anyone.
+//   - Re-reserving with the SAME reservationId is `Accepted` and updates the
+//     hold, which is the spec's behaviour for a retried command.
+func (s *Station) reserveLocked(req ocpp.ReserveNowReq) string {
+	c, err := s.connectorLocked(req.ConnectorID)
+	if err != nil {
+		return "Rejected"
+	}
+	if req.ExpiryDate.IsZero() {
+		return "Rejected"
+	}
+	if !req.ExpiryDate.After(time.Now()) {
+		// An expiry already in the past is not a reservation, it is a typo the
+		// CSMS should hear about now instead of after a support call.
+		return "Rejected"
+	}
+	if req.IDTag == "" {
+		return "Rejected"
+	}
+
+	switch c.State {
+	case Faulted:
+		return "Faulted"
+	case Unavailable:
+		return "Unavailable"
+	case Charging, SuspendedEV, Finishing, Preparing:
+		return "Occupied"
+	}
+	if c.Session != nil || c.Plugged {
+		return "Occupied"
+	}
+	// A live reservation for someone else means the spot is taken. Same id is a
+	// retry, and a retry must not fail.
+	if c.Reservation != nil && c.Reservation.ID != req.ReservationID &&
+		c.Reservation.ExpiresAt.After(time.Now()) {
+		return "Occupied"
+	}
+
+	c.Reservation = &Reservation{ID: req.ReservationID, IDTag: req.IDTag, ExpiresAt: req.ExpiryDate}
+	c.State = Reserved
+	s.queueStatusLocked(c)
+	s.flushQueueLocked()
+	return "Accepted"
+}
+
+// expireReservationsLocked drops holds whose time is up.
+//
+// THE STATION EXPIRES ITS OWN, and that is the property that makes the whole
+// feature survive an outage: if expiry depended on the CSMS sending
+// CancelReservation, a network partition would leave connectors held with
+// nobody able to release them.
+func (s *Station) expireReservationsLocked(now time.Time) {
+	for _, c := range s.connectors {
+		if c.Reservation == nil || c.Reservation.ExpiresAt.After(now) {
+			continue
+		}
+		s.log.Info("reservation expired", "connector", c.ID, "reservation", c.Reservation.ID)
+		c.Reservation = nil
+		if c.State == Reserved {
+			if c.Plugged {
+				c.State = Preparing
+			} else {
+				c.State = Available
+			}
+			s.queueStatusLocked(c)
+		}
+	}
+}

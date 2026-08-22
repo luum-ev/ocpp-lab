@@ -5,6 +5,8 @@ package ocpp
 // pointers or omitempty. Nothing here is invented; extending the set means
 // reading the schema first.
 
+import "time"
+
 // ---------------------------------------------------------------- outbound
 
 // BootNotificationReq is sent once per connection, before anything else.
@@ -129,6 +131,36 @@ type ResetConf struct {
 	Status string `json:"status"`
 }
 
+// ReserveNowReq is OCPP 1.6 §6.35. `expiryDate` and `reservationId` are
+// required by the spec, and the emulator refuses the message without them —
+// a CSMS that forgets the expiry would otherwise reserve a connector forever
+// and only find out in the field.
+type ReserveNowReq struct {
+	ConnectorID int `json:"connectorId"`
+	// ExpiryDate is RFC 3339. Zero value means the CSMS omitted it.
+	ExpiryDate    time.Time `json:"expiryDate"`
+	IDTag         string    `json:"idTag"`
+	ParentIDTag   string    `json:"parentIdTag,omitempty"`
+	ReservationID int       `json:"reservationId"`
+}
+
+// ReserveNowConf status set is the spec's, and every value is reachable in
+// this emulator — a status a test can never observe teaches nothing.
+type ReserveNowConf struct {
+	// Accepted | Faulted | Occupied | Rejected | Unavailable
+	Status string `json:"status"`
+}
+
+// CancelReservationReq is OCPP 1.6 §6.7 — the id alone, which is exactly why
+// the CSMS must keep it unique among live reservations.
+type CancelReservationReq struct {
+	ReservationID int `json:"reservationId"`
+}
+
+type CancelReservationConf struct {
+	Status string `json:"status"` // Accepted | Rejected
+}
+
 type UnlockConnectorReq struct {
 	ConnectorID int `json:"connectorId"`
 }
@@ -208,7 +240,7 @@ type ChargingProfile struct {
 }
 
 type SetChargingProfileReq struct {
-	ConnectorID     int             `json:"connectorId"`
+	ConnectorID        int             `json:"connectorId"`
 	CsChargingProfiles ChargingProfile `json:"csChargingProfiles"`
 }
 
