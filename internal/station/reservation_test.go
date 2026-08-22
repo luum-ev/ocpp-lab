@@ -232,8 +232,15 @@ func TestStartIsRefusedForAStrangerOnAReservedConnector(t *testing.T) {
 
 	st.mu.Lock()
 	errHolder := st.startChargeLocked(1, "TAG-MINE", nil)
+	c2, _ := st.connectorLocked(1)
 	st.mu.Unlock()
 	if errHolder != nil {
 		t.Fatalf("the holder must be able to start: %v", errHolder)
+	}
+	/* The reservation must be GONE after the start (OCPP 1.6 §3.13). Keeping it
+	   is not harmless: the connector returns to Reserved when the session ends,
+	   held by a reservation nobody is waiting on. The e2e caught this. */
+	if c2.Reservation != nil {
+		t.Error("the reservation must end when the transaction starts")
 	}
 }

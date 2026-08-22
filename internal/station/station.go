@@ -265,6 +265,12 @@ func (s *Station) startChargeLocked(connector int, idTag string, battery *EVBatt
 		return fmt.Errorf("connector %d: reserved for another idTag until %s",
 			connector, c.Reservation.ExpiresAt.UTC().Format(time.RFC3339))
 	}
+	/* THE RESERVATION ENDS WHEN THE TRANSACTION STARTS (OCPP 1.6 §3.13): it
+	   did its job. Keeping it alive past the start is not harmless — the
+	   connector goes back to Reserved when the session ends, and the spot is
+	   held by a reservation nobody is waiting on. Found by the e2e, which is
+	   why the e2e exists. */
+	c.Reservation = nil
 	b := s.Config.Battery
 	if battery != nil {
 		b = *battery
