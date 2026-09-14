@@ -1,0 +1,21 @@
+# Tell luum-ev/local-dev that main changed: the end-to-end suite (compose +
+# this emulated fleet + the slices) runs there, with every sibling repo on
+# main. Only after merge, not on every PR — Actions minutes are scarce, and
+# what gets proven is what already landed.
+name: notify local-dev
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer ${{ secrets.LUUM_DISPATCH_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/luum-ev/local-dev/dispatches \
+            -d '{"event_type":"irmao-atualizado","client_payload":{"repo":"${{ github.repository }}","sha":"${{ github.sha }}"}}'
