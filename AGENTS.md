@@ -68,5 +68,6 @@ internal/api/     REST control plane
 
 OCPP 2.0.1 · ISO 15118 / Plug&Charge · smart-charging *optimization* (we obey
 `SetChargingProfile`; we don't compute profiles) · a rich web UI (the API comes
-first; a thin UI can follow) · security profiles 2/3 (TLS client certs) — v1
-speaks `ws://` and `wss://` with basic auth only.
+first; a thin UI can follow) · security profile 3 (TLS client certs) — v1
+speaks `ws://` and `wss://`, with optional Basic Auth (profile 2, a station's
+`authorizationKey`).

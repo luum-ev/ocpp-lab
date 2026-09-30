@@ -32,6 +32,12 @@ type Config struct {
 	MeterValuesS int `yaml:"meterValuesS"`
 	// Battery is the default simulated EV plugged into this station.
 	Battery EVBattery `yaml:"battery"`
+	// AuthorizationKey is the OCPP 1.6 Security Profile 2 password: when set,
+	// the WebSocket upgrade carries HTTP Basic Auth with the station id as
+	// user and this key as password (OCPP 1.6 Security Whitepaper —
+	// 16 to 40 characters). Empty means Security Profile 1: no credential.
+	// It is never part of the API snapshot.
+	AuthorizationKey string `yaml:"authorizationKey"`
 }
 
 // Station is one simulated charge point: a WebSocket client, its connectors,
@@ -137,8 +143,23 @@ func (s *Station) Run(ctx context.Context) {
 func (s *Station) connectAndServe(ctx context.Context) error {
 	url := s.CSMS + "/" + s.Config.ID
 	dialer := websocket.Dialer{Subprotocols: []string{"ocpp1.6"}, HandshakeTimeout: 10 * time.Second}
-	conn, _, err := dialer.DialContext(ctx, url, http.Header{})
+	header := http.Header{}
+	if s.Config.AuthorizationKey != "" {
+		// Security Profile 2. gorilla/websocket rejects user:pass in the URL,
+		// so the header is set by hand — exactly what a real charger sends.
+		req := http.Request{Header: header}
+		req.SetBasicAuth(s.Config.ID, s.Config.AuthorizationKey)
+	}
+	conn, resp, err := dialer.DialContext(ctx, url, header)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
+		if resp != nil {
+			// 401 is the CSMS refusing the credential — say so, a bare
+			// "bad handshake" sends people debugging TLS instead.
+			return fmt.Errorf("dial %s: HTTP %d: %w", url, resp.StatusCode, err)
+		}
 		return fmt.Errorf("dial %s: %w", url, err)
 	}
 	s.mu.Lock()
