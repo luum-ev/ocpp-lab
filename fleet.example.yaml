@@ -16,6 +16,9 @@ stations:
     phases: 3
     heartbeatS: 300
     meterValuesS: 30
+    # Security Profile 2: with a key, the upgrade carries Basic Auth
+    # (user = id, password = this key, 16..40 chars). Omit it for profile 1.
+    # authorizationKey: 0123456789abcdef0123456789abcdef01234567
     battery:
       capacityKwh: 60
       socPercent: 35

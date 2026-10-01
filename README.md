@@ -94,6 +94,19 @@ the hold instead of failing. A status a test can never observe teaches nothing.
 The current hold shows up in `GET /stations` under each connector, so a test can
 assert on the reservation itself instead of on side effects.
 
+### Security Profile 2 (Basic Auth), optional per station
+
+Give a station an `authorizationKey` in the fleet file and its WebSocket
+upgrade carries HTTP Basic Auth — the station `id` as user, the key as
+password (16 to 40 characters), as the OCPP 1.6 Security Whitepaper
+describes. Without it the station connects as Security Profile 1, with no
+credential. A refused handshake is logged with its HTTP status (`401`), so a
+wrong key does not look like a TLS problem. The key never appears in
+`GET /stations`.
+
+Use `wss://` for anything that is not your own machine: Basic Auth over plain
+`ws://` sends the key in the clear.
+
 OCPP 2.0.1 is a planned major, not a v1 stretch goal.
 
 ## Container
