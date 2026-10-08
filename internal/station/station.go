@@ -356,12 +356,53 @@ func (s *Station) TapRFID(connector int, idTag string) error {
 	return nil
 }
 
+// stopReasons is the OCPP 1.6 StopTransaction.req `reason` enum (§7.37).
+var stopReasons = map[string]bool{
+	"DeAuthorized": true, "EmergencyStop": true, "EVDisconnected": true,
+	"HardReset": true, "Local": true, "Other": true, "PowerLoss": true,
+	"Reboot": true, "Remote": true, "SoftReset": true, "UnlockCommand": true,
+}
+
+// ValidStopReason reports whether r is one of the OCPP 1.6 stop reasons.
+func ValidStopReason(r string) bool { return stopReasons[r] }
+
 // StopCharge ends the transaction with the given reason (Local, Remote,
-// EVDisconnected...).
+// EVDisconnected, PowerLoss...). Only the OCPP 1.6 enum is accepted: a
+// reason the spec does not have is a message no real charge point sends.
 func (s *Station) StopCharge(connector int, reason string) error {
+	if !ValidStopReason(reason) {
+		return fmt.Errorf("stop reason %q is not an OCPP 1.6 Reason", reason)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.stopChargeLocked(connector, reason)
+}
+
+// SuspendEV simulates the car stopping to draw energy on its own (a full
+// battery, its own charging schedule) while the transaction stays OPEN —
+// what a real EV does, and what the target-SoC shortcut in tickSessions
+// skips. The connector goes SuspendedEV, MeterValues keep flowing with 0 W
+// and a flat register, and the cable stays locked: the session ends only
+// when the driver pulls the cable from the car (ev-disconnect) or someone
+// stops it. It is the idle time after the charge that a CSMS may bill.
+func (s *Station) SuspendEV(connector int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.connectorLocked(connector)
+	if err != nil {
+		return err
+	}
+	if c.Session == nil {
+		return fmt.Errorf("connector %d: no transaction running", connector)
+	}
+	if c.Session.Suspended {
+		return fmt.Errorf("connector %d: the EV is already suspended", connector)
+	}
+	c.Session.Suspended = true
+	c.State = SuspendedEV
+	s.queueStatusLocked(c)
+	s.flushQueueLocked()
+	return nil
 }
 
 func (s *Station) stopChargeLocked(connector int, reason string) error {
@@ -487,6 +528,7 @@ func (s *Station) Snapshot() map[string]any {
 				"energyWh":      int(c.Session.EnergyWh),
 				"socPercent":    c.Session.Battery.SocPercent,
 				"dcReportsSoc":  s.Config.DC,
+				"suspended":     c.Session.Suspended,
 			}
 		}
 		conns = append(conns, entry)

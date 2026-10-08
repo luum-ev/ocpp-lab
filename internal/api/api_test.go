@@ -203,3 +203,58 @@ func TestWebUIIsServed(t *testing.T) {
 		t.Fatalf("web UI: %d %s", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
 }
+
+func doJSON(t *testing.T, url, body string) (int, map[string]any) {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
+func TestEVSuspendAndStopWithAReasonThroughAPI(t *testing.T) {
+	api, seen := startAPI(t)
+	base := api.URL + "/stations/API-TEST-01/connectors/1"
+
+	if code, _ := do(t, "POST", base+"/ev-suspend"); code != http.StatusConflict {
+		t.Fatalf("ev-suspend without a transaction should be 409, got %d", code)
+	}
+	if code, body := do(t, "POST", base+"/plug"); code != 200 {
+		t.Fatalf("plug: %d %v", code, body)
+	}
+	if code, body := do(t, "POST", base+"/charge"); code != 200 {
+		t.Fatalf("charge: %d %v", code, body)
+	}
+	code, body := do(t, "POST", base+"/ev-suspend")
+	if code != 200 {
+		t.Fatalf("ev-suspend: %d %v", code, body)
+	}
+	first := body["connectors"].([]any)[0].(map[string]any)
+	if first["state"] != "SuspendedEV" || !first["session"].(map[string]any)["suspended"].(bool) {
+		t.Fatalf("after ev-suspend the connector is SuspendedEV with the session open: %v", first)
+	}
+	// A body that is not JSON is ignored, as it always was: not a 400.
+	if code, _ := doJSON(t, api.URL+"/stations/API-TEST-01/connectors/2/stop", `{\}`); code != http.StatusConflict {
+		t.Fatalf("a non-JSON body on an idle connector should be the usual 409, got %d", code)
+	}
+	if code, _ := doJSON(t, base+"/stop", `{"reason":"Unplugged"}`); code != http.StatusBadRequest {
+		t.Fatalf("a reason outside the 1.6 enum should be 400, got %d", code)
+	}
+	if code, body := doJSON(t, base+"/stop", `{"reason":"PowerLoss"}`); code != 200 {
+		t.Fatalf("stop with PowerLoss: %d %v", code, body)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, a := range seen() {
+			if a == "StopTransaction" {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("CSMS never saw the stop: %v", seen())
+}

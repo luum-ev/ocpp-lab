@@ -30,6 +30,11 @@ cp fleet.example.yaml fleet.yaml   # point csms: at your platform
 # driver pulling the cable from the CAR mid-session:
 curl -X POST localhost:8887/stations/SIM-AC-001/connectors/1/rfid -d '{"idTag":"TAG-01"}'
 curl -X POST localhost:8887/stations/SIM-AC-001/connectors/1/ev-disconnect
+# The car stops drawing energy but the transaction stays open (SuspendedEV:
+# 0 W, flat register, cable locked) — the idle time after a charge:
+curl -X POST localhost:8887/stations/SIM-AC-001/connectors/1/ev-suspend
+# Stop with any OCPP 1.6 reason (default Local):
+curl -X POST localhost:8887/stations/SIM-AC-001/connectors/1/stop -d '{"reason":"PowerLoss"}'
 ./ocpp-lab offline SIM-DC-001         # sessions keep running, messages queue
 ./ocpp-lab online  SIM-DC-001         # queue flushes, in order
 ```

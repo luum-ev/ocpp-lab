@@ -2,6 +2,7 @@ package station
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +22,23 @@ import (
 type fakeCSMS struct {
 	mu      sync.Mutex
 	actions []string
-	txSeq   int
+	// frames keeps every CALL with its payload, for tests that assert on
+	// what was said and not only on what was sent.
+	frames []ocpp.Frame
+	txSeq  int
+}
+
+// payloads returns the payloads of every CALL of one action, in order.
+func (f *fakeCSMS) payloads(action string) []json.RawMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []json.RawMessage
+	for _, fr := range f.frames {
+		if fr.Action == action {
+			out = append(out, fr.Payload)
+		}
+	}
+	return out
 }
 
 func (f *fakeCSMS) seen() []string {
@@ -54,6 +71,7 @@ func (f *fakeCSMS) handler(t *testing.T) http.HandlerFunc {
 			}
 			f.mu.Lock()
 			f.actions = append(f.actions, frame.Action)
+			f.frames = append(f.frames, frame)
 			f.mu.Unlock()
 
 			var payload any
