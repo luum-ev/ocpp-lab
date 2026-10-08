@@ -125,11 +125,12 @@ func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	/* A body that is not JSON is ignored, as before this route read any
+	   body at all: existing clients post `-d '{}'`-ish placeholders, and
+	   breaking them would be a regression for a feature they never asked
+	   for. Only a well-formed reason outside the enum is refused. */
 	var req stopRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !strings.Contains(err.Error(), "EOF") {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req)
 	if req.Reason == "" {
 		req.Reason = "Local"
 	}

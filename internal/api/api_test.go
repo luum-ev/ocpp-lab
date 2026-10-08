@@ -237,6 +237,10 @@ func TestEVSuspendAndStopWithAReasonThroughAPI(t *testing.T) {
 	if first["state"] != "SuspendedEV" || !first["session"].(map[string]any)["suspended"].(bool) {
 		t.Fatalf("after ev-suspend the connector is SuspendedEV with the session open: %v", first)
 	}
+	// A body that is not JSON is ignored, as it always was: not a 400.
+	if code, _ := doJSON(t, api.URL+"/stations/API-TEST-01/connectors/2/stop", `{\}`); code != http.StatusConflict {
+		t.Fatalf("a non-JSON body on an idle connector should be the usual 409, got %d", code)
+	}
 	if code, _ := doJSON(t, base+"/stop", `{"reason":"Unplugged"}`); code != http.StatusBadRequest {
 		t.Fatalf("a reason outside the 1.6 enum should be 400, got %d", code)
 	}
