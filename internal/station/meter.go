@@ -34,12 +34,18 @@ type Session struct {
 	// ProfileLimitW is the cap imposed by the CSMS via SetChargingProfile
 	// (load balancing under test). Zero means no profile.
 	ProfileLimitW float64
+	// Suspended is the car no longer drawing energy while the transaction
+	// stays open (SuspendedEV): power is zero and the register stays flat.
+	Suspended bool
 }
 
 // powerW computes the instantaneous power for this tick — the minimum of what
 // the station offers, what the car accepts at its current SoC, and what the
 // CSMS allowed via charging profile.
 func (s *Session) powerW(st *Config) float64 {
+	if s.Suspended {
+		return 0
+	}
 	station := st.PowerKw * 1000
 	var car float64
 	if st.DC {

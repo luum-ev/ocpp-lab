@@ -49,7 +49,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/charge", s.charge)
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/rfid", s.rfid)
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/ev-disconnect", s.connectorAction("ev-disconnect"))
-	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/stop", s.connectorAction("stop"))
+	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/ev-suspend", s.connectorAction("ev-suspend"))
+	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/stop", s.stop)
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/fault", s.fault)
 	mux.HandleFunc("POST /stations/{id}/kill", s.stationAction("kill"))
 	mux.HandleFunc("POST /stations/{id}/offline", s.stationAction("offline"))
@@ -94,10 +95,10 @@ func (s *Server) connectorAction(action string) http.HandlerFunc {
 			err = st.Plug(n)
 		case "unplug":
 			err = st.Unplug(n)
-		case "stop":
-			err = st.StopCharge(n, "Local")
 		case "ev-disconnect":
 			err = st.DisconnectEV(n)
+		case "ev-suspend":
+			err = st.SuspendEV(n)
 		}
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
@@ -105,6 +106,42 @@ func (s *Server) connectorAction(action string) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, st.Snapshot())
 	}
+}
+
+type stopRequest struct {
+	// Reason is the OCPP 1.6 StopTransaction reason; empty means Local
+	// (someone stopped it at the station).
+	Reason string `json:"reason"`
+}
+
+// stop ends the transaction with an optional OCPP 1.6 reason — PowerLoss,
+// EmergencyStop, Reboot… — so a CSMS can be tested on how it reads each one.
+func (s *Server) stop(w http.ResponseWriter, r *http.Request) {
+	st, ok := s.station(w, r)
+	if !ok {
+		return
+	}
+	n, ok := s.connector(w, r)
+	if !ok {
+		return
+	}
+	var req stopRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !strings.Contains(err.Error(), "EOF") {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Reason == "" {
+		req.Reason = "Local"
+	}
+	if !station.ValidStopReason(req.Reason) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("reason %q is not an OCPP 1.6 StopTransaction reason", req.Reason))
+		return
+	}
+	if err := st.StopCharge(n, req.Reason); err != nil {
+		writeError(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st.Snapshot())
 }
 
 type chargeRequest struct {
