@@ -69,12 +69,56 @@ REST call, so anything you click, CI can replay with curl.
 
 OCPP **1.6J only**. Implemented: `BootNotification`, `Heartbeat`,
 `StatusNotification`, `StartTransaction`, `StopTransaction`, `MeterValues`
-(AC: per-phase `Current.Import`; DC: `SoC`, `Voltage`, `Current.Import`),
+(AC: per-phase `Current.Import`; DC: `SoC`, `Voltage`, `Current.Import`;
+periodic `Sample.Periodic` and clock-aligned `Sample.Clock`),
 and inbound `RemoteStartTransaction`, `RemoteStopTransaction`, `Reset`,
 `UnlockConnector`, `ChangeAvailability`, `TriggerMessage`,
 `Get/ChangeConfiguration`, `SetChargingProfile`, `ClearChargingProfile`,
 `ReserveNow`, `CancelReservation`.
 Everything else answers a proper `NotImplemented` CALLERROR.
+
+### Metering configuration
+
+The metering keys of the OCPP 1.6 Core Profile are read-write through
+`ChangeConfiguration` and reported by `GetConfiguration`:
+
+| Key | Default | Accepted values | Effect |
+| --- | --- | --- | --- |
+| `MeterValueSampleInterval` | the station's `meterValuesS` (30 when unset) | integer, 0 to 86400 | Seconds between periodic `MeterValues` (`Sample.Periodic`) for every running transaction. `0` stops them. |
+| `MeterValuesSampledData` | everything the station measures | comma-separated measurands, see below | The measurands periodic samples carry. |
+| `ClockAlignedDataInterval` | `0` (off) | integer, 0 to 86400 | `MeterValues` with `Sample.Clock` on wall-clock boundaries, every N seconds from 00:00 UTC, while a transaction is running, in addition to the periodic ones. Each is stamped with its boundary. `0` stops them. |
+| `MeterValuesAlignedData` | `Energy.Active.Import.Register` | comma-separated measurands, see below | The measurands clock-aligned samples carry. |
+| `HeartbeatInterval` | the station's `heartbeatS` (300 when unset) | integer above 0 | Seconds between `Heartbeat`s, from the next connection on. |
+| `NumberOfConnectors` | the station's `connectors` | read-only | |
+
+The measurands a station can report depend on its type:
+
+* AC: `Energy.Active.Import.Register`, `Power.Active.Import`, `Current.Import`
+  (per phase).
+* DC: `Energy.Active.Import.Register`, `Power.Active.Import`, `SoC`, `Voltage`,
+  `Current.Import`.
+
+By default periodic samples carry all of them, which is what the emulator
+always sent. A CSMS that sets `MeterValuesSampledData` gets exactly the list it
+asked for, so SoC is sent only when requested, and only by a DC station.
+
+How the station answers:
+
+* A new interval is `Accepted` and applies at once: the sampling ticker and
+  the clock-aligned timer are reset live, with no reboot and no reconnect.
+* A value that is not an integer in range is `Rejected`, and the old value stays.
+* A measurand list is `Rejected` as a whole when any item is not a measurand
+  the station can produce: a typo, `Temperature`, or `SoC` on an AC station (a
+  Type 2 cable has no data link to the car). Accepting it would promise data
+  that never arrives.
+* Any other key is `NotSupported`.
+
+`GetConfiguration` with no key returns every key above. With keys, it returns
+those and lists the others under `unknownKey`.
+
+The simulated car does not depend on any of this: physics advances on its own
+one-second step, so the energy register, the target SoC and reservation expiry
+stay right even with sampling turned off.
 
 ### Reservations
 

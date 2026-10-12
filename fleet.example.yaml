@@ -15,6 +15,8 @@ stations:
     dc: false
     phases: 3
     heartbeatS: 300
+    # The initial MeterValueSampleInterval; a CSMS can change it at runtime
+    # with ChangeConfiguration (see the README's metering configuration).
     meterValuesS: 30
     # Security Profile 2: with a key, the upgrade carries Basic Auth
     # (user = id, password = this key, 16..40 chars). Omit it for profile 1.

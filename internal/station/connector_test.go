@@ -31,11 +31,13 @@ func TestDCSampleReportsSoCAndACDoesNot(t *testing.T) {
 	ac := &Config{DC: false, PowerKw: 22, Phases: 3}
 	session := &Session{Battery: EVBattery{CapacityKwh: 60, SocPercent: 50, TargetSoc: 80, MaxAcKw: 7.4, MaxDcKw: 90}}
 
-	dcSample := session.Sample(dc, timeNow())
+	// Ask both for every measurand: the AC station must still not invent SoC.
+	all := supportedMeasurands(true)
+	dcSample := session.Sample(dc, timeNow(), contextPeriodic, all)
 	if !hasMeasurand(dcSample, "SoC") {
 		t.Fatal("DC must report SoC — CCS talks to the BMS")
 	}
-	acSample := session.Sample(ac, timeNow())
+	acSample := session.Sample(ac, timeNow(), contextPeriodic, all)
 	if hasMeasurand(acSample, "SoC") {
 		t.Fatal("AC must NOT report SoC — Type 2 has no data link to the car")
 	}
