@@ -2,7 +2,7 @@
 # Run (docker or podman), mounting your fleet file:
 #   docker run -v $PWD/fleet.yaml:/etc/ocpp-lab/fleet.yaml \
 #     -e OCPP_LAB_CSMS=ws://host.docker.internal:9000/ocpp \
-#     -p 8887:8887 ghcr.io/luum-ev/ocpp-lab
+#     -p 127.0.0.1:8887:8887 ocpp-lab
 # In Kubernetes the same file arrives as a ConfigMap mounted at the same path.
 FROM golang:1.22-alpine AS build
 WORKDIR /src

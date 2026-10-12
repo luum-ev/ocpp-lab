@@ -34,8 +34,9 @@ type Config struct {
 	Battery EVBattery `yaml:"battery"`
 	// AuthorizationKey is the OCPP 1.6 Security Profile 2 password: when set,
 	// the WebSocket upgrade carries HTTP Basic Auth with the station id as
-	// user and this key as password (OCPP 1.6 Security Whitepaper —
-	// 16 to 40 characters). Empty means Security Profile 1: no credential.
+	// user and this key as password. The OCPP 1.6 Security Whitepaper sets
+	// 16 to 40 characters; the length is deliberately not enforced, so a CSMS
+	// can be tested with a key outside it. Empty means Security Profile 1.
 	// It is never part of the API snapshot.
 	AuthorizationKey string `yaml:"authorizationKey"`
 }
