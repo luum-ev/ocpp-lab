@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestExampleFleetParsesCompletely loads the repository's own example file
@@ -45,5 +47,47 @@ func TestCsmsOverrideWins(t *testing.T) {
 	}
 	if fl.CSMS != "ws://override:9999/ocpp" {
 		t.Fatalf("csms override lost: %s", fl.CSMS)
+	}
+}
+
+// TestShippedSampleIntervals pins the MeterValueSampleInterval the shipped
+// fleets boot with — AC every 30 s, DC every 15 s — in the example file and in
+// the Helm chart's default values. A CSMS may change it at runtime with
+// ChangeConfiguration; these are only the starting values.
+func TestShippedSampleIntervals(t *testing.T) {
+	want := map[string]int{"SIM-AC-001": 30, "SIM-DC-001": 15}
+
+	fl, err := Load(filepath.Join("..", "..", "fleet.example.yaml"), "", slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for id, s := range want {
+		st, ok := fl.Station(id)
+		if !ok {
+			t.Fatalf("%s missing from fleet.example.yaml", id)
+		}
+		if st.Config.MeterValuesS != s {
+			t.Fatalf("fleet.example.yaml %s: meterValuesS %d, want %d", id, st.Config.MeterValuesS, s)
+		}
+	}
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", "charts", "ocpp-lab", "values.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values struct {
+		Fleet File `yaml:"fleet"`
+	}
+	if err := yaml.Unmarshal(raw, &values); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, st := range values.Fleet.Stations {
+		got[st.ID] = st.MeterValuesS
+	}
+	for id, s := range want {
+		if got[id] != s {
+			t.Fatalf("Helm values.yaml %s: meterValuesS %d, want %d", id, got[id], s)
+		}
 	}
 }

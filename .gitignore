@@ -1,0 +1,8 @@
+# Build output. `go build ./cmd/ocpp-lab` writes the binary at the repo root.
+/ocpp-lab
+/ocpp-lab.exe
+/dist/
+*.test
+*.out
+# `helm package charts/ocpp-lab` output.
+/ocpp-lab-*.tgz

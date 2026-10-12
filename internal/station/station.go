@@ -34,8 +34,9 @@ type Config struct {
 	Battery EVBattery `yaml:"battery"`
 	// AuthorizationKey is the OCPP 1.6 Security Profile 2 password: when set,
 	// the WebSocket upgrade carries HTTP Basic Auth with the station id as
-	// user and this key as password (OCPP 1.6 Security Whitepaper —
-	// 16 to 40 characters). Empty means Security Profile 1: no credential.
+	// user and this key as password. The OCPP 1.6 Security Whitepaper sets
+	// 16 to 40 characters; the length is deliberately not enforced, so a CSMS
+	// can be tested with a key outside it. Empty means Security Profile 1.
 	// It is never part of the API snapshot.
 	AuthorizationKey string `yaml:"authorizationKey"`
 }
@@ -67,6 +68,15 @@ type Station struct {
 	// pendingTap is an RFID tap waiting for its Authorize answer.
 	pendingTap *pendingTap
 
+	// Metering configuration the CSMS changes at runtime (OCPP 1.6 Core
+	// Profile keys). The sample interval itself is Config.MeterValuesS.
+	sampledData   []string // MeterValuesSampledData
+	alignedData   []string // MeterValuesAlignedData
+	clockAlignedS int      // ClockAlignedDataInterval, 0 = off
+	// meterConfig wakes the meter loop when an interval changes, so the
+	// new value applies without a restart.
+	meterConfig chan struct{}
+
 	log *slog.Logger
 }
 
@@ -89,7 +99,13 @@ func New(cfg Config, csms string, log *slog.Logger) *Station {
 		wantOnline:    true,
 		pending:       map[string]string{},
 		profileLimitW: map[int]float64{},
-		log:           log.With("station", cfg.ID),
+		// The factory defaults: periodic samples carry everything the station
+		// measures (what it always sent), clock-aligned data is off until the
+		// CSMS sets ClockAlignedDataInterval.
+		sampledData: supportedMeasurands(cfg.DC),
+		alignedData: []string{measurandEnergy},
+		meterConfig: make(chan struct{}, 1),
+		log:         log.With("station", cfg.ID),
 	}
 	for i := 1; i <= cfg.Connectors; i++ {
 		s.connectors = append(s.connectors, &Connector{ID: i, State: Available})
@@ -100,27 +116,14 @@ func New(cfg Config, csms string, log *slog.Logger) *Station {
 // Run is the station's life: connect, boot, then tick until ctx ends. It
 // reconnects with backoff — a real charge point never gives up either.
 //
-// The physics ticker lives HERE, not inside the connection loop: charging is
+// The meter loop lives HERE, not inside the connection loop: charging is
 // local, only the telemetry link is not. A car keeps taking energy while the
 // CSMS is unreachable — the MeterValues just pile up in the offline queue and
 // travel on reconnect, which is exactly the store-and-forward the spec asks
 // for. Tying the meter to the socket would freeze the car whenever the
 // network blinks, and every energy figure after an outage would be a lie.
 func (s *Station) Run(ctx context.Context) {
-	meter := time.NewTicker(time.Duration(s.Config.MeterValuesS) * time.Second)
-	defer meter.Stop()
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-meter.C:
-				if err := s.tickSessions(); err != nil {
-					s.log.Warn("session tick failed", "error", err)
-				}
-			}
-		}
-	}()
+	go s.meterLoop(ctx)
 
 	backoff := time.Second
 	for ctx.Err() == nil {
@@ -380,7 +383,7 @@ func (s *Station) StopCharge(connector int, reason string) error {
 
 // SuspendEV simulates the car stopping to draw energy on its own (a full
 // battery, its own charging schedule) while the transaction stays OPEN —
-// what a real EV does, and what the target-SoC shortcut in tickSessions
+// what a real EV does, and what the target-SoC shortcut in the meter loop
 // skips. The connector goes SuspendedEV, MeterValues keep flowing with 0 W
 // and a flat register, and the cable stays locked: the session ends only
 // when the driver pulls the cable from the car (ev-disconnect) or someone
@@ -398,6 +401,7 @@ func (s *Station) SuspendEV(connector int) error {
 	if c.Session.Suspended {
 		return fmt.Errorf("connector %d: the EV is already suspended", connector)
 	}
+	c.Session.AdvanceTo(&s.Config, time.Now())
 	c.Session.Suspended = true
 	c.State = SuspendedEV
 	s.queueStatusLocked(c)
@@ -413,6 +417,7 @@ func (s *Station) stopChargeLocked(connector int, reason string) error {
 	if c.Session == nil {
 		return fmt.Errorf("connector %d: no transaction running", connector)
 	}
+	c.Session.AdvanceTo(&s.Config, time.Now())
 	c.MeterWh = c.Session.MeterStartWh + int(c.Session.EnergyWh)
 	s.queueCallLocked("StopTransaction", ocpp.StopTransactionReq{
 		TransactionID: c.Session.TransactionID,
@@ -553,36 +558,6 @@ func (s *Station) connectorLocked(id int) (*Connector, error) {
 		return nil, fmt.Errorf("connector %d does not exist (station has %d)", id, len(s.connectors))
 	}
 	return s.connectors[id-1], nil
-}
-
-func (s *Station) tickSessions() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dt := time.Duration(s.Config.MeterValuesS) * time.Second
-	/* Reservations expire on the SAME tick as the physics, because expiry is
-	   time passing — exactly like energy. Putting it on the connection loop
-	   would mean a held connector never frees itself while offline, which is
-	   the one situation the station has to handle alone. */
-	s.expireReservationsLocked(time.Now())
-	for _, c := range s.connectors {
-		if c.Session == nil {
-			continue
-		}
-		done := c.Session.Advance(&s.Config, dt)
-		tx := c.Session.TransactionID
-		s.queueCallLocked("MeterValues", ocpp.MeterValuesReq{
-			ConnectorID:   c.ID,
-			TransactionID: &tx,
-			MeterValue:    []ocpp.MeterValue{c.Session.Sample(&s.Config, time.Now())},
-		})
-		if done {
-			// The car reached its target: a real EV suspends, the driver
-			// eventually stops. We stop with the honest reason.
-			_ = s.stopChargeLocked(c.ID, "EVDisconnected")
-		}
-	}
-	s.flushQueueLocked()
-	return nil
 }
 
 func (s *Station) sendCall(action string, payload any) error {
@@ -879,6 +854,7 @@ func (s *Station) handleCall(f ocpp.Frame) error {
 			}
 		}
 		s.mu.Lock()
+		s.advanceSessionsLocked(time.Now())
 		s.profileLimitW[req.ConnectorID] = limit
 		if c, err := s.connectorLocked(req.ConnectorID); err == nil && c.Session != nil {
 			c.Session.ProfileLimitW = limit
@@ -889,6 +865,7 @@ func (s *Station) handleCall(f ocpp.Frame) error {
 
 	case "ClearChargingProfile":
 		s.mu.Lock()
+		s.advanceSessionsLocked(time.Now())
 		s.profileLimitW = map[int]float64{}
 		for _, c := range s.connectors {
 			if c.Session != nil {
@@ -899,28 +876,19 @@ func (s *Station) handleCall(f ocpp.Frame) error {
 		return respond(ocpp.ClearChargingProfileConf{Status: "Accepted"})
 
 	case "GetConfiguration":
-		hb := fmt.Sprintf("%d", s.Config.HeartbeatS)
-		mv := fmt.Sprintf("%d", s.Config.MeterValuesS)
-		return respond(ocpp.GetConfigurationConf{ConfigurationKey: []ocpp.KeyValue{
-			{Key: "HeartbeatInterval", Readonly: false, Value: &hb},
-			{Key: "MeterValueSampleInterval", Readonly: false, Value: &mv},
-			{Key: "NumberOfConnectors", Readonly: true, Value: ptr(fmt.Sprintf("%d", s.Config.Connectors))},
-		}})
+		var req ocpp.GetConfigurationReq
+		if err := json.Unmarshal(f.Payload, &req); err != nil {
+			return err
+		}
+		return respond(s.getConfiguration(req.Key))
 
 	case "ChangeConfiguration":
 		var req ocpp.ChangeConfigurationReq
 		if err := json.Unmarshal(f.Payload, &req); err != nil {
 			return err
 		}
-		status := "Accepted"
-		switch req.Key {
-		case "HeartbeatInterval":
-			fmt.Sscanf(req.Value, "%d", &s.Config.HeartbeatS)
-		case "MeterValueSampleInterval":
-			fmt.Sscanf(req.Value, "%d", &s.Config.MeterValuesS)
-		default:
-			status = "NotSupported"
-		}
+		status := s.changeConfiguration(req.Key, req.Value)
+		s.log.Info("configuration change", "key", req.Key, "value", req.Value, "status", status)
 		return respond(ocpp.ChangeConfigurationConf{Status: status})
 
 	case "TriggerMessage":

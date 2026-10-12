@@ -37,6 +37,8 @@ type Session struct {
 	// Suspended is the car no longer drawing energy while the transaction
 	// stays open (SuspendedEV): power is zero and the register stays flat.
 	Suspended bool
+	// AdvancedAt is how far the physics has run. Zero means StartedAt.
+	AdvancedAt time.Time
 }
 
 // powerW computes the instantaneous power for this tick — the minimum of what
@@ -82,24 +84,50 @@ func (s *Session) Advance(st *Config, dt time.Duration) (done bool) {
 	return false
 }
 
+// AdvanceTo moves the session forward to now, by the wall time elapsed since
+// the last advance. Energy follows the clock, not the MeterValues cadence:
+// the CSMS can change or disable sampling mid-session and the register must
+// stay right.
+func (s *Session) AdvanceTo(st *Config, now time.Time) (done bool) {
+	last := s.AdvancedAt
+	if last.IsZero() {
+		last = s.StartedAt
+	}
+	if last.IsZero() {
+		s.AdvancedAt = now
+		return false
+	}
+	if !now.After(last) {
+		return false
+	}
+	s.AdvancedAt = now
+	return s.Advance(st, now.Sub(last))
+}
+
 // Sample builds the MeterValues payload for the current instant — and this is
 // where AC and DC honestly differ: AC reports per-phase currents and NO SoC
 // (a Type 2 cable has no data link to the car); DC reports SoC, DC voltage
 // and DC current, because CCS talks to the BMS.
-func (s *Session) Sample(st *Config, now time.Time) ocpp.MeterValue {
+//
+// readingContext is the OCPP ReadingContext of every value (Sample.Periodic,
+// Sample.Clock), and only the measurands listed are kept — the CSMS chooses
+// them with MeterValuesSampledData / MeterValuesAlignedData. A measurand the
+// station type cannot produce is never invented: SoC on AC stays absent even
+// if asked for.
+func (s *Session) Sample(st *Config, now time.Time, readingContext string, measurands []string) ocpp.MeterValue {
 	p := s.powerW(st)
 	register := float64(s.MeterStartWh) + s.EnergyWh
 	values := []ocpp.SampledValue{
 		{
 			Value:     fmt.Sprintf("%.0f", register),
-			Context:   "Sample.Periodic",
-			Measurand: "Energy.Active.Import.Register",
+			Context:   readingContext,
+			Measurand: measurandEnergy,
 			Unit:      "Wh",
 		},
 		{
 			Value:     fmt.Sprintf("%.0f", p),
-			Context:   "Sample.Periodic",
-			Measurand: "Power.Active.Import",
+			Context:   readingContext,
+			Measurand: measurandPower,
 			Unit:      "W",
 		},
 	}
@@ -108,20 +136,20 @@ func (s *Session) Sample(st *Config, now time.Time) ocpp.MeterValue {
 		values = append(values,
 			ocpp.SampledValue{
 				Value:     fmt.Sprintf("%.1f", s.Battery.SocPercent),
-				Context:   "Sample.Periodic",
-				Measurand: "SoC",
+				Context:   readingContext,
+				Measurand: measurandSoC,
 				Unit:      "Percent",
 			},
 			ocpp.SampledValue{
 				Value:     fmt.Sprintf("%.0f", voltage),
-				Context:   "Sample.Periodic",
-				Measurand: "Voltage",
+				Context:   readingContext,
+				Measurand: measurandVoltage,
 				Unit:      "V",
 			},
 			ocpp.SampledValue{
 				Value:     fmt.Sprintf("%.1f", p/voltage),
-				Context:   "Sample.Periodic",
-				Measurand: "Current.Import",
+				Context:   readingContext,
+				Measurand: measurandCurrent,
 				Unit:      "A",
 			},
 		)
@@ -135,12 +163,22 @@ func (s *Session) Sample(st *Config, now time.Time) ocpp.MeterValue {
 		for _, ph := range phases {
 			values = append(values, ocpp.SampledValue{
 				Value:     fmt.Sprintf("%.1f", perPhase),
-				Context:   "Sample.Periodic",
-				Measurand: "Current.Import",
+				Context:   readingContext,
+				Measurand: measurandCurrent,
 				Phase:     ph,
 				Unit:      "A",
 			})
 		}
 	}
-	return ocpp.MeterValue{Timestamp: now.UTC().Format(time.RFC3339), SampledValue: values}
+	wanted := map[string]bool{}
+	for _, m := range measurands {
+		wanted[m] = true
+	}
+	kept := make([]ocpp.SampledValue, 0, len(values))
+	for _, v := range values {
+		if wanted[v.Measurand] {
+			kept = append(kept, v)
+		}
+	}
+	return ocpp.MeterValue{Timestamp: now.UTC().Format(time.RFC3339), SampledValue: kept}
 }

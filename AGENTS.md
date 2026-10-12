@@ -23,8 +23,10 @@ This emulator exists to validate real CSMS implementations. An emulator that is
   optionality. When in doubt, the spec wins over convenience.
 * Behavior follows the spec too, including the inconvenient parts: offline
   transaction queueing (store-and-forward of `StopTransaction`/`MeterValues`),
-  `ConnectionTimeOut`, message ordering, idempotent retries with the same
-  `messageId`.
+  message ordering, idempotent retries with the same `messageId`. Some are not
+  implemented yet (`ConnectionTimeOut`, for one); the README's v1 scope lists
+  what is, and what is partial. Do not document a behavior the code does not
+  have.
 * **Physical fidelity matters as much as protocol fidelity**: AC stations do NOT
   report SoC (Type 2 has no data link to the car); DC stations DO (CCS talks to
   the BMS). Per-phase currents on AC, DC voltage/current and battery taper on DC.

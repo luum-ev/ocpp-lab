@@ -3,6 +3,7 @@ package station
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,53 @@ type fakeCSMS struct {
 	// what was said and not only on what was sent.
 	frames []ocpp.Frame
 	txSeq  int
+
+	// conn is the station's socket, kept so the CSMS can send its own CALLs
+	// (ChangeConfiguration, GetConfiguration...). gorilla/websocket allows one
+	// writer at a time, hence writeMu.
+	conn    *websocket.Conn
+	writeMu sync.Mutex
+	callSeq int
+	results map[string]chan json.RawMessage
+}
+
+func (f *fakeCSMS) write(conn *websocket.Conn, raw []byte) error {
+	f.writeMu.Lock()
+	defer f.writeMu.Unlock()
+	return conn.WriteMessage(websocket.TextMessage, raw)
+}
+
+// call sends a CSMS-initiated CALL to the connected station and returns the
+// payload of its CALLRESULT.
+func (f *fakeCSMS) call(t *testing.T, action string, payload any) json.RawMessage {
+	t.Helper()
+	f.mu.Lock()
+	conn := f.conn
+	f.callSeq++
+	id := fmt.Sprintf("csms-%d", f.callSeq)
+	answer := make(chan json.RawMessage, 1)
+	if f.results == nil {
+		f.results = map[string]chan json.RawMessage{}
+	}
+	f.results[id] = answer
+	f.mu.Unlock()
+	if conn == nil {
+		t.Fatalf("%s: no station connected", action)
+	}
+	raw, err := ocpp.EncodeCall(id, action, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.write(conn, raw); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case p := <-answer:
+		return p
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no CALLRESULT for %s", action)
+		return nil
+	}
 }
 
 // payloads returns the payloads of every CALL of one action, in order.
@@ -56,6 +104,9 @@ func (f *fakeCSMS) handler(t *testing.T) http.HandlerFunc {
 			return
 		}
 		defer conn.Close()
+		f.mu.Lock()
+		f.conn = conn
+		f.mu.Unlock()
 		for {
 			_, raw, err := conn.ReadMessage()
 			if err != nil {
@@ -64,6 +115,16 @@ func (f *fakeCSMS) handler(t *testing.T) http.HandlerFunc {
 			frame, err := ocpp.Decode(raw)
 			if err != nil {
 				t.Errorf("decode: %v", err)
+				continue
+			}
+			if frame.Type == ocpp.CallResult {
+				f.mu.Lock()
+				answer := f.results[frame.MessageID]
+				delete(f.results, frame.MessageID)
+				f.mu.Unlock()
+				if answer != nil {
+					answer <- frame.Payload
+				}
 				continue
 			}
 			if frame.Type != ocpp.Call {
@@ -94,7 +155,7 @@ func (f *fakeCSMS) handler(t *testing.T) http.HandlerFunc {
 				payload = map[string]any{}
 			}
 			resp, _ := ocpp.EncodeCallResult(frame.MessageID, payload)
-			if err := conn.WriteMessage(websocket.TextMessage, resp); err != nil {
+			if err := f.write(conn, resp); err != nil {
 				return
 			}
 		}
