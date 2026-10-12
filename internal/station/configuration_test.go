@@ -132,6 +132,16 @@ func TestUnknownKeyIsNotSupported(t *testing.T) {
 	}
 }
 
+func TestReadOnlyKeyIsRejected(t *testing.T) {
+	st := quietStation(t, Config{ID: "SIM-CFG-06", Connectors: 2}, "")
+	if got := st.changeConfiguration("NumberOfConnectors", "4"); got != "Rejected" {
+		t.Fatalf("a read-only key is Rejected, got %s", got)
+	}
+	if got := configValue(t, st, "NumberOfConnectors"); got != "2" {
+		t.Fatalf("NumberOfConnectors changed to %s", got)
+	}
+}
+
 func TestGetConfigurationReportsTheMeteringKeys(t *testing.T) {
 	st := quietStation(t, Config{ID: "SIM-CFG-05", DC: true, MeterValuesS: 15, Connectors: 2}, "")
 	want := map[string]string{

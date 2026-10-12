@@ -108,6 +108,10 @@ func (s *Station) changeConfiguration(key, value string) string {
 			return "Rejected"
 		}
 		s.alignedData = m
+	case "NumberOfConnectors":
+		// A key the station knows but will not change is Rejected;
+		// NotSupported is for keys it does not have at all.
+		return "Rejected"
 	default:
 		return "NotSupported"
 	}
