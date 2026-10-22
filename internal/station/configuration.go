@@ -108,6 +108,12 @@ func (s *Station) changeConfiguration(key, value string) string {
 			return "Rejected"
 		}
 		s.alignedData = m
+	case "ConnectionTimeOut":
+		n, err := strconv.Atoi(value)
+		if err != nil || n <= 0 || n > maxIntervalS {
+			return "Rejected"
+		}
+		s.connectionTimeoutS = n
 	case "NumberOfConnectors":
 		// A key the station knows but will not change is Rejected;
 		// NotSupported is for keys it does not have at all.
@@ -130,6 +136,7 @@ func (s *Station) getConfiguration(keys []string) ocpp.GetConfigurationConf {
 		{Key: "MeterValuesSampledData", Value: ptr(strings.Join(s.sampledData, ","))},
 		{Key: "ClockAlignedDataInterval", Value: ptr(strconv.Itoa(s.clockAlignedS))},
 		{Key: "MeterValuesAlignedData", Value: ptr(strings.Join(s.alignedData, ","))},
+		{Key: "ConnectionTimeOut", Value: ptr(strconv.Itoa(s.connectionTimeoutS))},
 		{Key: "NumberOfConnectors", Readonly: true, Value: ptr(strconv.Itoa(s.Config.Connectors))},
 	}
 	if len(keys) == 0 {
