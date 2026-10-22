@@ -46,9 +46,18 @@ type Connector struct {
 	Reservation *Reservation
 	// Session is nil unless a transaction is running on this connector.
 	Session *Session
+	// WaitingStart is a remote start accepted without a cable, waiting for
+	// the plug until ConnectionTimeOut.
+	WaitingStart *WaitingStart
 	// MeterWh is the lifetime energy register, like a real meter: it only
 	// ever grows, and survives sessions — meterStart/meterStop come from it.
 	MeterWh int
+}
+
+// WaitingStart is a remote start waiting for the cable (ConnectionTimeOut).
+type WaitingStart struct {
+	IDTag     string
+	ExpiresAt time.Time
 }
 
 // Plug simulates the cable being connected. Only valid when nothing is
@@ -62,7 +71,8 @@ func (c *Connector) Plug() error {
 	if c.Plugged {
 		return fmt.Errorf("connector %d: cable already plugged", c.ID)
 	}
-	if c.State != Available && c.State != Reserved {
+	waiting := c.WaitingStart != nil && c.State == Preparing
+	if c.State != Available && c.State != Reserved && !waiting {
 		return fmt.Errorf("connector %d: cannot plug while %s", c.ID, c.State)
 	}
 	c.Plugged = true

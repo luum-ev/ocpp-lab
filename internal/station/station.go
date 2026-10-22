@@ -67,6 +67,9 @@ type Station struct {
 	profileLimitW map[int]float64
 	// pendingTap is an RFID tap waiting for its Authorize answer.
 	pendingTap *pendingTap
+	// connectionTimeoutS is ConnectionTimeOut (OCPP 1.6 §9.1): how long a
+	// remote start accepted without a cable waits for the plug.
+	connectionTimeoutS int
 
 	// Metering configuration the CSMS changes at runtime (OCPP 1.6 Core
 	// Profile keys). The sample interval itself is Config.MeterValuesS.
@@ -102,10 +105,11 @@ func New(cfg Config, csms string, log *slog.Logger) *Station {
 		// The factory defaults: periodic samples carry everything the station
 		// measures (what it always sent), clock-aligned data is off until the
 		// CSMS sets ClockAlignedDataInterval.
-		sampledData: supportedMeasurands(cfg.DC),
-		alignedData: []string{measurandEnergy},
-		meterConfig: make(chan struct{}, 1),
-		log:         log.With("station", cfg.ID),
+		sampledData:        supportedMeasurands(cfg.DC),
+		alignedData:        []string{measurandEnergy},
+		meterConfig:        make(chan struct{}, 1),
+		connectionTimeoutS: defaultConnectionTimeoutS,
+		log:                log.With("station", cfg.ID),
 	}
 	for i := 1; i <= cfg.Connectors; i++ {
 		s.connectors = append(s.connectors, &Connector{ID: i, State: Available})
@@ -241,6 +245,18 @@ func (s *Station) Plug(connector int) error {
 	if err := c.Plug(); err != nil {
 		return err
 	}
+	/* THE CABLE COMPLETES A REMOTE START THAT WAS WAITING FOR IT: the driver
+	   tapped "Carregar" first and plugged second, which is the order the app
+	   teaches. The transaction starts now, with the tag the CSMS sent. */
+	if w := c.WaitingStart; w != nil {
+		c.WaitingStart = nil
+		if err := s.startChargeLocked(connector, w.IDTag, nil); err != nil {
+			s.log.Info("remote start waiting for the cable failed at the plug", "reason", err)
+			s.queueStatusLocked(c)
+			s.flushQueueLocked()
+		}
+		return nil
+	}
 	s.queueStatusLocked(c)
 	s.flushQueueLocked()
 	return nil
@@ -260,6 +276,70 @@ func (s *Station) Unplug(connector int) error {
 	s.queueStatusLocked(c)
 	s.flushQueueLocked()
 	return nil
+}
+
+const defaultConnectionTimeoutS = 60
+
+/*
+remoteStartLocked answers RemoteStartTransaction like a real station.
+
+WITH THE CABLE IN, the transaction starts at once. WITHOUT IT, a real charge
+point ACCEPTS and waits for the plug for ConnectionTimeOut seconds (OCPP 1.6
+§5.11 and §9.1): it reports Preparing, starts the transaction when the cable
+goes in, and goes back to Available if nobody plugs in time. Refusing the
+remote start without a cable made the emulator stricter than the WEG, ABB and
+Wallbox units in the field — and the Luum app teaches "tap Carregar, then plug
+the cable", so the strict emulator rejected the exact flow it exists to test
+(PLUUM-452, condo rehearsal of 2026-10-22).
+*/
+func (s *Station) remoteStartLocked(connector int, idTag string) error {
+	c, err := s.connectorLocked(connector)
+	if err != nil {
+		return err
+	}
+	if c.Plugged {
+		return s.startChargeLocked(connector, idTag, nil)
+	}
+	if c.Session != nil {
+		return fmt.Errorf("connector %d: transaction already running", connector)
+	}
+	if c.WaitingStart != nil {
+		return fmt.Errorf("connector %d: a remote start is already waiting for the cable", connector)
+	}
+	if c.State != Available && c.State != Reserved {
+		return fmt.Errorf("connector %d: cannot start while %s", connector, c.State)
+	}
+	if c.ReservationBlocks(idTag, time.Now()) {
+		return fmt.Errorf("connector %d: reserved for another idTag until %s",
+			connector, c.Reservation.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	w := &WaitingStart{IDTag: idTag, ExpiresAt: time.Now().Add(time.Duration(s.connectionTimeoutS) * time.Second)}
+	c.WaitingStart = w
+	if c.State != Reserved {
+		c.State = Preparing
+	}
+	s.queueStatusLocked(c)
+	s.flushQueueLocked()
+	time.AfterFunc(time.Until(w.ExpiresAt), func() { s.expireWaitingStart(connector, w) })
+	return nil
+}
+
+// expireWaitingStart ends a remote start nobody plugged in for: the connector
+// goes back to Available, as at a real station when ConnectionTimeOut passes.
+func (s *Station) expireWaitingStart(connector int, w *WaitingStart) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.connectorLocked(connector)
+	if err != nil || c.WaitingStart != w {
+		return
+	}
+	c.WaitingStart = nil
+	if c.State == Preparing && !c.Plugged {
+		c.State = Available
+	}
+	s.log.Info("remote start expired: no cable within ConnectionTimeOut", "connector", connector)
+	s.queueStatusLocked(c)
+	s.flushQueueLocked()
 }
 
 // StartCharge begins a local transaction (the driver authorized at the
@@ -704,7 +784,7 @@ func (s *Station) handleCall(f ocpp.Frame) error {
 			connector = *req.ConnectorID
 		}
 		s.mu.Lock()
-		err := s.startChargeLocked(connector, req.IDTag, nil)
+		err := s.remoteStartLocked(connector, req.IDTag)
 		s.mu.Unlock()
 		status := "Accepted"
 		if err != nil {

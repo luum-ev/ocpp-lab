@@ -176,11 +176,10 @@ Everything else answers a proper `NotImplemented` CALLERROR.
 | `ClockAlignedDataInterval` | `0` (off) | integer, 0 to 86400 | `MeterValues` with `Sample.Clock` on wall-clock boundaries, every N seconds from 00:00 UTC, while a transaction is running, in addition to the periodic ones. Each is stamped with its boundary. `0` stops them. |
 | `MeterValuesAlignedData` | `Energy.Active.Import.Register` | comma-separated measurands, see below | The measurands clock-aligned samples carry. |
 | `HeartbeatInterval` | the station's `heartbeatS` (300 when unset) | integer above 0 | Seconds between `Heartbeat`s, from the next connection on. |
+| `ConnectionTimeOut` | `60` | integer, 1 to 86400 | Seconds a `RemoteStartTransaction` accepted without a cable waits for the plug. The connector reports `Preparing`, the transaction starts when the cable goes in, and the connector goes back to `Available` if nobody plugs in time — like a real station. |
 | `NumberOfConnectors` | the station's `connectors` | read-only | |
 
-No other key exists. `ConnectionTimeOut`, for example, is not implemented:
-`GetConfiguration` lists it under `unknownKey`, and `ChangeConfiguration`
-answers `NotSupported`.
+No other key exists.
 
 The measurands a station can report depend on its type:
 
