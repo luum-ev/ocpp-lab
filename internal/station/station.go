@@ -169,9 +169,21 @@ func (s *Station) connectAndServe(ctx context.Context) error {
 		}
 		return fmt.Errorf("dial %s: %w", url, err)
 	}
+	/* BOOTNOTIFICATION FIRST, then whatever was queued while offline
+	   (OCPP 1.6 §4.2: nothing before the boot). The connection goes online
+	   in the same critical section that puts the boot at the head of the
+	   queue — otherwise a flush from another goroutine (an API action, an
+	   expiring remote start) sends the old StatusNotifications ahead of the
+	   boot, which is what the gateway saw on 28/10 (PLUUM-511). */
 	s.mu.Lock()
 	s.conn = conn
 	s.online = true
+	s.queueBootFirstLocked()
+	// Announce every connector — a real station reports its state on boot.
+	for _, c := range s.connectors {
+		s.queueStatusLocked(c)
+	}
+	s.flushQueueLocked()
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
@@ -181,22 +193,6 @@ func (s *Station) connectAndServe(ctx context.Context) error {
 		conn.Close()
 	}()
 	s.log.Info("connected", "csms", url)
-
-	if err := s.sendCall("BootNotification", ocpp.BootNotificationReq{
-		ChargePointVendor:       s.Config.Vendor,
-		ChargePointModel:        s.Config.Model,
-		ChargePointSerialNumber: s.Config.Serial,
-		FirmwareVersion:         s.Config.Firmware,
-	}); err != nil {
-		return err
-	}
-	// Announce every connector — a real station reports its state on boot.
-	s.mu.Lock()
-	for _, c := range s.connectors {
-		s.queueStatusLocked(c)
-	}
-	s.flushQueueLocked()
-	s.mu.Unlock()
 
 	heartbeat := time.NewTicker(time.Duration(s.Config.HeartbeatS) * time.Second)
 	defer heartbeat.Stop()
@@ -660,6 +656,23 @@ func (s *Station) queueCallLocked(action string, payload any) {
 	s.queue = append(s.queue, raw)
 }
 
+// queueBootFirstLocked puts a BootNotification at the HEAD of the queue,
+// ahead of anything queued while the station was offline.
+func (s *Station) queueBootFirstLocked() {
+	n := len(s.queue)
+	s.queueCallLocked("BootNotification", ocpp.BootNotificationReq{
+		ChargePointVendor:       s.Config.Vendor,
+		ChargePointModel:        s.Config.Model,
+		ChargePointSerialNumber: s.Config.Serial,
+		FirmwareVersion:         s.Config.Firmware,
+	})
+	if len(s.queue) == n+1 && n > 0 {
+		boot := s.queue[n]
+		copy(s.queue[1:], s.queue[:n])
+		s.queue[0] = boot
+	}
+}
+
 func (s *Station) queueStatusLocked(c *Connector) {
 	s.queueCallLocked("StatusNotification", ocpp.StatusNotificationReq{
 		ConnectorID: c.ID,
@@ -720,8 +733,23 @@ func (s *Station) handleCallResult(f ocpp.Frame) error {
 		// Attach the CSMS-issued transactionId to the newest session
 		// still waiting for one.
 		for _, c := range s.connectors {
-			if c.Session != nil && c.Session.TransactionID == 0 {
+			if c.Session != nil && c.Session.TransactionID == 0 && !c.Session.idAttached {
 				c.Session.TransactionID = conf.TransactionID
+				c.Session.idAttached = true
+				/* THE CSMS REFUSED THE idTag (OCPP 1.6 §4.8, StopTransactionOnInvalidId,
+				   true by default): a real station does not keep giving energy to a
+				   tag the CSMS did not accept — it ends the transaction at once with
+				   reason DeAuthorized, using whatever transactionId came back. The
+				   lab used to ignore idTagInfo and keep Charging on an invalid tag,
+				   which left the CSMS and the station disagreeing about whether a
+				   session existed (PLUUM-511: tx 0 Charging on LAB-ACA-B02). */
+				if conf.IDTagInfo.Status != "" && conf.IDTagInfo.Status != "Accepted" {
+					s.log.Warn("StartTransaction refused by CSMS — stopping (DeAuthorized)",
+						"connector", c.ID, "idTagStatus", conf.IDTagInfo.Status, "transactionId", conf.TransactionID)
+					if err := s.stopChargeLocked(c.ID, "DeAuthorized"); err != nil {
+						s.log.Warn("deauthorized stop failed", "connector", c.ID, "error", err)
+					}
+				}
 				break
 			}
 		}

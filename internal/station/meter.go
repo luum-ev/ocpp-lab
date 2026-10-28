@@ -37,6 +37,10 @@ type Session struct {
 	// Suspended is the car no longer drawing energy while the transaction
 	// stays open (SuspendedEV): power is zero and the register stays flat.
 	Suspended bool
+	// idAttached: the StartTransaction.conf already came back for this
+	// session — a transactionId of 0 (what a CSMS answers to a refused tag)
+	// must not make it look like it is still waiting for one.
+	idAttached bool
 	// AdvancedAt is how far the physics has run. Zero means StartedAt.
 	AdvancedAt time.Time
 }
