@@ -72,3 +72,24 @@ func TestSecondRemoteStartWhileWaitingIsRefused(t *testing.T) {
 		t.Fatal("a second remote start while one waits must be refused")
 	}
 }
+
+// The armed refusal rejects exactly one remote start and leaves the
+// connector Available; the next one is accepted (PLUUM-511, the "charger
+// that refuses" of the dev end-to-end script).
+func TestRefuseNextRemoteStartIsOneShot(t *testing.T) {
+	st := stationForReservation(t)
+	if err := st.RefuseNextRemoteStart(1); err != nil {
+		t.Fatal(err)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if err := st.remoteStartLocked(1, "A"); err == nil {
+		t.Fatal("the armed remote start must be refused")
+	}
+	if st.connectors[0].State != Available {
+		t.Fatalf("a refused remote start leaves the connector Available, got %s", st.connectors[0].State)
+	}
+	if err := st.remoteStartLocked(1, "A"); err != nil {
+		t.Fatalf("the refusal is one-shot: %v", err)
+	}
+}

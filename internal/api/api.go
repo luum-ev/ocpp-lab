@@ -50,6 +50,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/rfid", s.rfid)
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/ev-disconnect", s.connectorAction("ev-disconnect"))
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/ev-suspend", s.connectorAction("ev-suspend"))
+	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/refuse-remote-start", s.connectorAction("refuse-remote-start"))
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/stop", s.stop)
 	mux.HandleFunc("POST /stations/{id}/connectors/{connector}/fault", s.fault)
 	mux.HandleFunc("POST /stations/{id}/kill", s.stationAction("kill"))
@@ -99,6 +100,8 @@ func (s *Server) connectorAction(action string) http.HandlerFunc {
 			err = st.DisconnectEV(n)
 		case "ev-suspend":
 			err = st.SuspendEV(n)
+		case "refuse-remote-start":
+			err = st.RefuseNextRemoteStart(n)
 		}
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
