@@ -293,6 +293,10 @@ func (s *Station) remoteStartLocked(connector int, idTag string) error {
 	if err != nil {
 		return err
 	}
+	if c.RefuseNextRemoteStart {
+		c.RefuseNextRemoteStart = false
+		return fmt.Errorf("connector %d: refusing this remote start (refuse-remote-start)", connector)
+	}
 	if c.Plugged {
 		return s.startChargeLocked(connector, idTag, nil)
 	}
@@ -506,6 +510,19 @@ func (s *Station) stopChargeLocked(connector int, reason string) error {
 	c.State = Finishing
 	s.queueStatusLocked(c)
 	s.flushQueueLocked()
+	return nil
+}
+
+// RefuseNextRemoteStart arms a one-shot Rejected for the next
+// RemoteStartTransaction on the connector, which keeps reporting Available.
+func (s *Station) RefuseNextRemoteStart(connector int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, err := s.connectorLocked(connector)
+	if err != nil {
+		return err
+	}
+	c.RefuseNextRemoteStart = true
 	return nil
 }
 

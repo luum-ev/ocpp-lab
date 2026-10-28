@@ -86,6 +86,7 @@ The REST API listens on `:8887`. The CLI and the web UI are thin clients of it.
 | `POST /stations/{id}/connectors/{n}/rfid` | `{"idTag":"..."}` (required) | Card tap: `Authorize`, then the start only if the CSMS accepts. Answers `202`; the outcome shows in the snapshot. |
 | `POST /stations/{id}/connectors/{n}/ev-disconnect` | | The driver pulls the cable from the car: stop with `EVDisconnected` and unplug. |
 | `POST /stations/{id}/connectors/{n}/ev-suspend` | | The car stops drawing energy; the transaction stays open. |
+| `POST /stations/{id}/connectors/{n}/refuse-remote-start` | | The next `RemoteStartTransaction` on the connector is `Rejected` (once); the connector stays `Available`. |
 | `POST /stations/{id}/connectors/{n}/stop` | optional `{"reason":"..."}` | Stop with an OCPP 1.6 `StopTransaction` reason. Empty or non-JSON body means `Local`; a reason outside the enum is `400`. |
 | `POST /stations/{id}/connectors/{n}/fault` | optional `{"errorCode":"..."}` | `StatusNotification` `Faulted` with that error code (default `OtherError`). The code is sent as given, so use an OCPP 1.6 `ChargePointErrorCode`. A running transaction stops with reason `Other`. |
 | `POST /stations/{id}/kill` | | Drop the TCP connection without a Close frame. |

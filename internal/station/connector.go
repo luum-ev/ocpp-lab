@@ -42,6 +42,11 @@ type Connector struct {
 	ID      int
 	State   State
 	Plugged bool
+	// RefuseNextRemoteStart makes the next RemoteStartTransaction come back
+	// Rejected (once): the "charger that refuses" a CSMS has to survive —
+	// firmware busy, a local lock, a contactor test — with the connector
+	// still reporting Available.
+	RefuseNextRemoteStart bool
 	// Reservation is nil unless the connector is held for someone.
 	Reservation *Reservation
 	// Session is nil unless a transaction is running on this connector.
