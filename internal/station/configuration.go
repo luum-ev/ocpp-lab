@@ -114,9 +114,16 @@ func (s *Station) changeConfiguration(key, value string) string {
 			return "Rejected"
 		}
 		s.connectionTimeoutS = n
-	case "NumberOfConnectors":
+	case "NumberOfConnectors", "SupportedFeatureProfiles":
 		// A key the station knows but will not change is Rejected;
 		// NotSupported is for keys it does not have at all.
+		return "Rejected"
+	case "ChargeProfileMaxStackLevel", "ChargingScheduleAllowedChargingRateUnit",
+		"ChargingScheduleMaxPeriods", "MaxChargingProfilesInstalled":
+		// The SmartCharging keys exist only on a station with the profile.
+		if !s.Config.smartChargingEnabled() {
+			return "NotSupported"
+		}
 		return "Rejected"
 	default:
 		return "NotSupported"
@@ -138,6 +145,17 @@ func (s *Station) getConfiguration(keys []string) ocpp.GetConfigurationConf {
 		{Key: "MeterValuesAlignedData", Value: ptr(strings.Join(s.alignedData, ","))},
 		{Key: "ConnectionTimeOut", Value: ptr(strconv.Itoa(s.connectionTimeoutS))},
 		{Key: "NumberOfConnectors", Readonly: true, Value: ptr(strconv.Itoa(s.Config.Connectors))},
+		{Key: "SupportedFeatureProfiles", Readonly: true, Value: ptr(strings.Join(s.featureProfiles(), ","))},
+	}
+	if s.Config.smartChargingEnabled() {
+		// The SmartCharging profile's own keys (OCPP 1.6 §9.4), read-only:
+		// they describe what this station's firmware can hold.
+		all = append(all,
+			ocpp.KeyValue{Key: "ChargeProfileMaxStackLevel", Readonly: true, Value: ptr(strconv.Itoa(maxStackLevel))},
+			ocpp.KeyValue{Key: "ChargingScheduleAllowedChargingRateUnit", Readonly: true, Value: ptr("Current,Power")},
+			ocpp.KeyValue{Key: "ChargingScheduleMaxPeriods", Readonly: true, Value: ptr(strconv.Itoa(maxSchedulePeriods))},
+			ocpp.KeyValue{Key: "MaxChargingProfilesInstalled", Readonly: true, Value: ptr(strconv.Itoa(maxProfilesInstalled))},
+		)
 	}
 	if len(keys) == 0 {
 		return ocpp.GetConfigurationConf{ConfigurationKey: all}
@@ -155,4 +173,17 @@ func (s *Station) getConfiguration(keys []string) ocpp.GetConfigurationConf {
 		}
 	}
 	return conf
+}
+
+// featureProfiles is the SupportedFeatureProfiles value: the OCPP 1.6
+// feature profiles this station implements. Core always; Reservation
+// (ReserveNow/CancelReservation) and RemoteTrigger (TriggerMessage) always;
+// SmartCharging unless the fleet file turns it off. FirmwareManagement and
+// LocalAuthListManagement are not implemented, so they are not claimed.
+func (s *Station) featureProfiles() []string {
+	out := []string{"Core", "Reservation", "RemoteTrigger"}
+	if s.Config.smartChargingEnabled() {
+		out = append(out, "SmartCharging")
+	}
+	return out
 }

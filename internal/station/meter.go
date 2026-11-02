@@ -31,9 +31,13 @@ type Session struct {
 	MeterStartWh  int
 	EnergyWh      float64
 	Battery       EVBattery
-	// ProfileLimitW is the cap imposed by the CSMS via SetChargingProfile
-	// (load balancing under test). Zero means no profile.
+	// ProfileLimitW is the cap the station's charging profiles impose right
+	// now (see charging_profile.go). Zero means no cap.
 	ProfileLimitW float64
+	// EVSESuspended is the STATION holding the car at zero (SuspendedEVSE):
+	// its charging profile allows less than the car can charge at (6 A per
+	// phase on AC). It lifts on its own when the limit rises again.
+	EVSESuspended bool
 	// Suspended is the car no longer drawing energy while the transaction
 	// stays open (SuspendedEV): power is zero and the register stays flat.
 	Suspended bool
@@ -49,9 +53,19 @@ type Session struct {
 // the station offers, what the car accepts at its current SoC, and what the
 // CSMS allowed via charging profile.
 func (s *Session) powerW(st *Config) float64 {
-	if s.Suspended {
+	if s.Suspended || s.EVSESuspended {
 		return 0
 	}
+	p := s.offeredW(st)
+	if s.ProfileLimitW > 0 {
+		p = math.Min(p, s.ProfileLimitW)
+	}
+	return p
+}
+
+// offeredW is the power with no charging profile: the minimum of what the
+// station offers and what the car accepts at its current SoC.
+func (s *Session) offeredW(st *Config) float64 {
 	station := st.PowerKw * 1000
 	var car float64
 	if st.DC {
@@ -65,11 +79,7 @@ func (s *Session) powerW(st *Config) float64 {
 	} else {
 		car = s.Battery.MaxAcKw * 1000
 	}
-	p := math.Min(station, car)
-	if s.ProfileLimitW > 0 {
-		p = math.Min(p, s.ProfileLimitW)
-	}
-	return p
+	return math.Min(station, car)
 }
 
 // Advance moves the session forward by dt and reports whether the target SoC

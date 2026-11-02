@@ -158,6 +158,9 @@ func (s *Station) physicsLocked(now time.Time) []int {
 			done = append(done, c.ID)
 		}
 	}
+	// A schedule moves with the clock (the next period, the end of its
+	// duration, validTo): the power for the next step follows it.
+	s.applyProfilesLocked(now)
 	return done
 }
 

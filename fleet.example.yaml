@@ -22,6 +22,10 @@ stations:
     # (user = id, password = this key). The spec says 16..40 chars; ocpp-lab
     # does not enforce it. Omit it for profile 1.
     # authorizationKey: 0123456789abcdef0123456789abcdef01234567
+    # SmartCharging feature profile (SetChargingProfile/ClearChargingProfile).
+    # On by default; false makes the station answer them with a NotImplemented
+    # CALLERROR, like firmware without the profile.
+    # smartCharging: false
     battery:
       capacityKwh: 60
       socPercent: 35
