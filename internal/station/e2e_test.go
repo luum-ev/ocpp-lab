@@ -44,7 +44,7 @@ func (f *fakeCSMS) write(conn *websocket.Conn, raw []byte) error {
 }
 
 // call sends a CSMS-initiated CALL to the connected station and returns the
-// payload of its CALLRESULT.
+// payload of its CALLRESULT (or {"callError": code} for a CALLERROR).
 func (f *fakeCSMS) call(t *testing.T, action string, payload any) json.RawMessage {
 	t.Helper()
 	f.mu.Lock()
@@ -117,13 +117,18 @@ func (f *fakeCSMS) handler(t *testing.T) http.HandlerFunc {
 				t.Errorf("decode: %v", err)
 				continue
 			}
-			if frame.Type == ocpp.CallResult {
+			if frame.Type == ocpp.CallResult || frame.Type == ocpp.CallError {
 				f.mu.Lock()
 				answer := f.results[frame.MessageID]
 				delete(f.results, frame.MessageID)
 				f.mu.Unlock()
+				payload := frame.Payload
+				if frame.Type == ocpp.CallError {
+					// A CALLERROR reaches the caller as {"callError": code}.
+					payload, _ = json.Marshal(map[string]string{"callError": frame.ErrorCode})
+				}
 				if answer != nil {
-					answer <- frame.Payload
+					answer <- payload
 				}
 				continue
 			}

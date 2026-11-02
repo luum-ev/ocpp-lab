@@ -15,9 +15,12 @@ const (
 	Preparing   State = "Preparing"
 	Charging    State = "Charging"
 	SuspendedEV State = "SuspendedEV"
-	Finishing   State = "Finishing"
-	Faulted     State = "Faulted"
-	Unavailable State = "Unavailable"
+	// SuspendedEVSE is the station withholding energy while the transaction
+	// stays open — here, a charging profile below what the car can take.
+	SuspendedEVSE State = "SuspendedEVSE"
+	Finishing     State = "Finishing"
+	Faulted       State = "Faulted"
+	Unavailable   State = "Unavailable"
 	// Reserved is what makes a reservation real. The CSMS can hold a record
 	// of who reserved what, but only the station can turn that record into
 	// exclusivity — and it keeps doing so while the network is down.
@@ -111,7 +114,7 @@ func (c *Connector) Unplug() error {
 	if !c.Plugged {
 		return fmt.Errorf("connector %d: no cable plugged", c.ID)
 	}
-	if c.State == Charging || c.State == SuspendedEV {
+	if c.State == Charging || c.State == SuspendedEV || c.State == SuspendedEVSE {
 		return fmt.Errorf("connector %d: cable is locked while charging — stop the session first", c.ID)
 	}
 	c.Plugged = false

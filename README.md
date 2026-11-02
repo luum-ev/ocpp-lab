@@ -81,7 +81,7 @@ The REST API listens on `:8887`. The CLI and the web UI are thin clients of it.
 | `GET /stations` | | Snapshot of every station and connector (state, cable, session, reservation). |
 | `GET /healthz` | | Liveness. |
 | `POST /stations/{id}/connectors/{n}/plug` | | Plug the cable. |
-| `POST /stations/{id}/connectors/{n}/unplug` | | Unplug it. Refused while the cable is locked (`Charging`, `SuspendedEV`). |
+| `POST /stations/{id}/connectors/{n}/unplug` | | Unplug it. Refused while the cable is locked (`Charging`, `SuspendedEV`, `SuspendedEVSE`). |
 | `POST /stations/{id}/connectors/{n}/charge` | optional `{"idTag":"...","battery":{...}}` | Start a local transaction. `idTag` defaults to `ocpp-lab`. `battery` replaces the station's simulated EV for this session, with the fleet file's keys: `capacityKwh`, `socPercent`, `targetSoc` (100 when 0), `maxAcKw`, `maxDcKw`. |
 | `POST /stations/{id}/connectors/{n}/rfid` | `{"idTag":"..."}` (required) | Card tap: `Authorize`, then the start only if the CSMS accepts. Answers `202`; the outcome shows in the snapshot. |
 | `POST /stations/{id}/connectors/{n}/ev-disconnect` | | The driver pulls the cable from the car: stop with `EVDisconnected` and unplug. |
@@ -148,18 +148,12 @@ Sent by the station: `BootNotification`, `Heartbeat`, `StatusNotification`,
 Handled when the CSMS sends them: `RemoteStartTransaction`,
 `RemoteStopTransaction`, `Reset`, `UnlockConnector`, `ChangeAvailability`,
 `GetConfiguration`, `ChangeConfiguration`, `ReserveNow`, `CancelReservation`,
-and these, which are partial:
+`SetChargingProfile` and `ClearChargingProfile` (see
+[Smart charging](#smart-charging)), and these, which are partial:
 
 * `TriggerMessage` answers `Accepted` to every request, but only sends
   `Heartbeat`, `StatusNotification` and `BootNotification`. Any other
   requested message is not sent.
-* `SetChargingProfile` obeys only the limit of the first period of the
-  schedule, from the moment it arrives. Later periods, `startPeriod`, stack
-  levels and purposes are ignored, and a profile for `connectorId` 0 has no
-  effect.
-* `ClearChargingProfile` clears every profile and answers `Accepted`; its
-  filters (`id`, `connectorId`, `chargingProfilePurpose`, `stackLevel`) are
-  ignored.
 * `ChangeAvailability` answers `Accepted` and changes the connectors with no
   transaction. A connector with a transaction keeps its state; the station
   never answers `Scheduled`.
@@ -179,6 +173,11 @@ Everything else answers a proper `NotImplemented` CALLERROR.
 | `HeartbeatInterval` | the station's `heartbeatS` (300 when unset) | integer above 0 | Seconds between `Heartbeat`s, from the next connection on. |
 | `ConnectionTimeOut` | `60` | integer, 1 to 86400 | Seconds a `RemoteStartTransaction` accepted without a cable waits for the plug. The connector reports `Preparing`, the transaction starts when the cable goes in, and the connector goes back to `Available` if nobody plugs in time — like a real station. |
 | `NumberOfConnectors` | the station's `connectors` | read-only | |
+| `SupportedFeatureProfiles` | `Core,Reservation,RemoteTrigger,SmartCharging` | read-only | `SmartCharging` is left out when the station has `smartCharging: false`. |
+| `ChargeProfileMaxStackLevel` | `8` | read-only | Only with SmartCharging. A higher `stackLevel` is `Rejected`. |
+| `ChargingScheduleAllowedChargingRateUnit` | `Current,Power` | read-only | Only with SmartCharging. |
+| `ChargingScheduleMaxPeriods` | `24` | read-only | Only with SmartCharging. A longer schedule is `Rejected`. |
+| `MaxChargingProfilesInstalled` | `16` | read-only | Only with SmartCharging. A profile beyond it is `Rejected`. |
 
 No other key exists.
 
@@ -202,7 +201,7 @@ How `ChangeConfiguration` answers:
   the station can produce: a typo, `Temperature`, or `SoC` on an AC station (a
   Type 2 cable has no data link to the car). Accepting it would promise data
   that never arrives.
-* `NumberOfConnectors` is read-only, so a change is `Rejected`.
+* The read-only keys are `Rejected`.
 * Any other key is `NotSupported`.
 
 `GetConfiguration` with no key returns every key above. With keys, it returns
@@ -211,6 +210,73 @@ those and lists the others under `unknownKey`.
 The simulated car does not depend on any of this: physics advances on its own
 one-second step, so the energy register, the target SoC and reservation expiry
 stay right even with sampling turned off.
+
+### Smart charging
+
+The SmartCharging feature profile is on by default. The station obeys the
+profiles it receives; it never computes one.
+
+`SetChargingProfile` accepts the three purposes, and answers `Rejected` when the
+profile breaks a rule a real station enforces:
+
+* `ChargePointMaxProfile` caps the whole station and only goes on `connectorId` 0.
+* `TxDefaultProfile` goes on `connectorId` 0 (every connector) or on one
+  connector. A profile on the connector wins over one on connector 0.
+* `TxProfile` needs a transaction running on that connector (and, when it
+  carries a `transactionId`, that transaction). It is dropped when the
+  transaction ends.
+* `chargingRateUnit` must be `A` or `W`, the first period must start at 0 and
+  the periods must be in order. `stackLevel`, the number of periods and the
+  number of installed profiles are capped by the read-only keys above.
+
+A profile with the same `chargingProfileId`, or with the same `stackLevel` and
+purpose on the same connector, replaces the old one.
+
+How the station picks the limit, on every one-second physics step:
+
+* Schedules follow the clock. `Absolute` starts at `startSchedule` (or when
+  the profile arrived, if it has none), `Relative` at the start of the
+  transaction, `Recurring` (`Daily` or `Weekly`) at `startSchedule`, repeated.
+  The period in force is the last one whose `startPeriod` has passed.
+  `duration`, `validFrom` and `validTo` are honoured. `minChargingRate` is ignored.
+* Within a purpose, the profile in force with the highest `stackLevel` wins. A
+  `TxProfile` wins over any `TxDefaultProfile`.
+* The `ChargePointMaxProfile` limit is shared among the connectors that are
+  drawing energy: each gets an equal share, and what a car cannot use goes to
+  the others.
+* Limits in `A` become watts at 230 V per phase, with the period's
+  `numberPhases` (up to the station's `phases`), or the station's `phases`
+  when the period has none.
+
+**The 6 A floor.** An AC car cannot charge below 6 A per phase (IEC 61851-1).
+When the limit for a connector is under that, whether it is 5 A, 0 or a W
+limit that comes to less than 6 A, the station holds the car at zero: the
+connector reports `SuspendedEVSE`, `MeterValues` show 0 W and a flat register,
+and the transaction stays open. When the limit allows 6 A again, the connector
+goes back to `Charging` by itself. A station cap that cannot give every car
+6 A does not starve them all: the highest-numbered connectors wait at zero and
+the rest charge. DC stations stop only at a limit of 0.
+
+`ClearChargingProfile` with an `id` removes that profile. Without one, it
+removes the profiles that match every filter given (`connectorId`,
+`chargingProfilePurpose`, `stackLevel`), and with no filter at all, every
+profile. It answers `Accepted`, or `Unknown` when nothing matched.
+
+Profiles survive a reconnect and a `Reset`, since they are kept in the
+station's memory, but not a restart of ocpp-lab.
+
+`GetCompositeSchedule` is not implemented and answers `NotImplemented`.
+
+In `GET /stations`, each running session shows `limitW` (the cap in force, 0
+for none) and `evseSuspended`.
+
+**A station without smart charging.** Set `smartCharging: false` on a station
+in the fleet file. `SetChargingProfile` and `ClearChargingProfile` then get a
+`NotImplemented` CALLERROR, which is what a charger whose firmware lacks the
+SmartCharging profile sends: to it the action does not exist. It is not the
+`NotSupported` status of `SetChargingProfile.conf`, which comes from a station
+that has the profile and turns down one request. `SupportedFeatureProfiles`
+then leaves out `SmartCharging`, and the SmartCharging keys do not exist.
 
 ### Reservations
 

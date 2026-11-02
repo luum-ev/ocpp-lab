@@ -154,7 +154,11 @@ func TestGetConfigurationReportsTheMeteringKeys(t *testing.T) {
 	got := map[string]string{}
 	for _, kv := range st.getConfiguration(nil).ConfigurationKey {
 		got[kv.Key] = *kv.Value
-		if kv.Readonly != (kv.Key == "NumberOfConnectors") {
+		writable := map[string]bool{
+			"HeartbeatInterval": true, "MeterValueSampleInterval": true, "MeterValuesSampledData": true,
+			"ClockAlignedDataInterval": true, "MeterValuesAlignedData": true, "ConnectionTimeOut": true,
+		}
+		if kv.Readonly == writable[kv.Key] {
 			t.Fatalf("%s: readonly=%v", kv.Key, kv.Readonly)
 		}
 	}

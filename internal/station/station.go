@@ -39,6 +39,12 @@ type Config struct {
 	// can be tested with a key outside it. Empty means Security Profile 1.
 	// It is never part of the API snapshot.
 	AuthorizationKey string `yaml:"authorizationKey"`
+	// SmartCharging is whether the station implements the OCPP 1.6
+	// SmartCharging feature profile. Unset means yes. With false, the
+	// station behaves like a charger whose firmware lacks the profile:
+	// SetChargingProfile and ClearChargingProfile get a NotImplemented
+	// CALLERROR, and SupportedFeatureProfiles does not list SmartCharging.
+	SmartCharging *bool `yaml:"smartCharging"`
 }
 
 // Station is one simulated charge point: a WebSocket client, its connectors,
@@ -63,8 +69,9 @@ type Station struct {
 	// queue holds frames that MUST survive a disconnection (StopTransaction,
 	// MeterValues) — flushed in order on reconnect, per spec.
 	queue [][]byte
-	// profileLimitW per connector id, set by SetChargingProfile.
-	profileLimitW map[int]float64
+	// profiles are the charging profiles the CSMS installed
+	// (SetChargingProfile), applied every physics step.
+	profiles []installedProfile
 	// pendingTap is an RFID tap waiting for its Authorize answer.
 	pendingTap *pendingTap
 	// connectionTimeoutS is ConnectionTimeOut (OCPP 1.6 §9.1): how long a
@@ -97,11 +104,10 @@ func New(cfg Config, csms string, log *slog.Logger) *Station {
 		cfg.Phases = 3
 	}
 	s := &Station{
-		Config:        cfg,
-		CSMS:          csms,
-		wantOnline:    true,
-		pending:       map[string]string{},
-		profileLimitW: map[int]float64{},
+		Config:     cfg,
+		CSMS:       csms,
+		wantOnline: true,
+		pending:    map[string]string{},
 		// The factory defaults: periodic samples carry everything the station
 		// measures (what it always sent), clock-aligned data is off until the
 		// CSMS sets ClockAlignedDataInterval.
@@ -389,9 +395,6 @@ func (s *Station) startChargeLocked(connector int, idTag string, battery *EVBatt
 		MeterStartWh: c.MeterWh,
 		Battery:      b,
 	}
-	if limit, ok := s.profileLimitW[connector]; ok {
-		c.Session.ProfileLimitW = limit
-	}
 	c.State = Charging
 	s.queueCallLocked("StartTransaction", ocpp.StartTransactionReq{
 		ConnectorID: connector,
@@ -400,6 +403,9 @@ func (s *Station) startChargeLocked(connector int, idTag string, battery *EVBatt
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	})
 	s.queueStatusLocked(c)
+	// A TxDefaultProfile (or the station cap) may already hold this car
+	// under the floor: it reports Charging, then SuspendedEVSE.
+	s.applyProfilesLocked(time.Now())
 	s.flushQueueLocked()
 	return nil
 }
@@ -483,8 +489,12 @@ func (s *Station) SuspendEV(connector int) error {
 	}
 	c.Session.AdvanceTo(&s.Config, time.Now())
 	c.Session.Suspended = true
-	c.State = SuspendedEV
-	s.queueStatusLocked(c)
+	if !c.Session.EVSESuspended {
+		c.State = SuspendedEV
+		s.queueStatusLocked(c)
+	}
+	// The car stopped drawing: its share of a station cap goes to the others.
+	s.applyProfilesLocked(time.Now())
 	s.flushQueueLocked()
 	return nil
 }
@@ -509,6 +519,10 @@ func (s *Station) stopChargeLocked(connector int, reason string) error {
 	c.Session = nil
 	c.State = Finishing
 	s.queueStatusLocked(c)
+	// A TxProfile lives as long as its transaction (OCPP 1.6 §3.13.2), and
+	// the freed share of a station cap goes back to the other connectors.
+	s.dropTxProfilesLocked(connector)
+	s.applyProfilesLocked(time.Now())
 	s.flushQueueLocked()
 	return nil
 }
@@ -627,6 +641,10 @@ func (s *Station) Snapshot() map[string]any {
 				"socPercent":    c.Session.Battery.SocPercent,
 				"dcReportsSoc":  s.Config.DC,
 				"suspended":     c.Session.Suspended,
+				// The charging profile in force: the cap in W (0 = none)
+				// and whether it holds the car at zero (SuspendedEVSE).
+				"limitW":        int(c.Session.ProfileLimitW),
+				"evseSuspended": c.Session.EVSESuspended,
 			}
 		}
 		conns = append(conns, entry)
@@ -961,44 +979,57 @@ func (s *Station) handleCall(f ocpp.Frame) error {
 		return respond(ocpp.ChangeAvailabilityConf{Status: "Accepted"})
 
 	case "SetChargingProfile":
+		// A station without the SmartCharging feature profile does not know
+		// the action at all: it falls through to the NotImplemented
+		// CALLERROR below, like firmware without the profile does.
+		if !s.Config.smartChargingEnabled() {
+			break
+		}
 		var req ocpp.SetChargingProfileReq
 		if err := json.Unmarshal(f.Payload, &req); err != nil {
 			return err
 		}
-		// Obey the first period's limit — the emulator follows profiles, it
-		// never computes them. W is used as-is; A converts at 230 V/phase.
-		limit := 0.0
-		if len(req.CsChargingProfiles.ChargingSchedule.ChargingSchedulePeriod) > 0 {
-			limit = req.CsChargingProfiles.ChargingSchedule.ChargingSchedulePeriod[0].Limit
-			if req.CsChargingProfiles.ChargingSchedule.ChargingRateUnit == "A" {
-				phases := float64(s.Config.Phases)
-				if s.Config.DC {
-					phases = 1
-				}
-				limit *= 230 * phases
-			}
-		}
+		now := time.Now()
 		s.mu.Lock()
-		s.advanceSessionsLocked(time.Now())
-		s.profileLimitW[req.ConnectorID] = limit
-		if c, err := s.connectorLocked(req.ConnectorID); err == nil && c.Session != nil {
-			c.Session.ProfileLimitW = limit
-		}
+		// Energy so far is counted at the old power before the cap changes.
+		s.advanceSessionsLocked(now)
+		status := s.setChargingProfileLocked(req, now)
+		s.applyProfilesLocked(now)
 		s.mu.Unlock()
-		s.log.Info("charging profile applied", "connector", req.ConnectorID, "limitW", limit)
-		return respond(ocpp.SetChargingProfileConf{Status: "Accepted"})
+		s.log.Info("SetChargingProfile", "connector", req.ConnectorID,
+			"profile", req.CsChargingProfiles.ChargingProfileID,
+			"purpose", req.CsChargingProfiles.ChargingProfilePurpose, "status", status)
+		if err := respond(ocpp.SetChargingProfileConf{Status: status}); err != nil {
+			return err
+		}
+		// The answer goes before the StatusNotification it may cause.
+		s.mu.Lock()
+		s.flushQueueLocked()
+		s.mu.Unlock()
+		return nil
 
 	case "ClearChargingProfile":
-		s.mu.Lock()
-		s.advanceSessionsLocked(time.Now())
-		s.profileLimitW = map[int]float64{}
-		for _, c := range s.connectors {
-			if c.Session != nil {
-				c.Session.ProfileLimitW = 0
-			}
+		if !s.Config.smartChargingEnabled() {
+			break
 		}
+		var req ocpp.ClearChargingProfileReq
+		if err := json.Unmarshal(f.Payload, &req); err != nil {
+			return err
+		}
+		now := time.Now()
+		s.mu.Lock()
+		s.advanceSessionsLocked(now)
+		status := s.clearChargingProfileLocked(req)
+		s.applyProfilesLocked(now)
 		s.mu.Unlock()
-		return respond(ocpp.ClearChargingProfileConf{Status: "Accepted"})
+		s.log.Info("ClearChargingProfile", "status", status)
+		if err := respond(ocpp.ClearChargingProfileConf{Status: status}); err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.flushQueueLocked()
+		s.mu.Unlock()
+		return nil
 
 	case "GetConfiguration":
 		var req ocpp.GetConfigurationReq
@@ -1099,7 +1130,7 @@ func (s *Station) reserveLocked(req ocpp.ReserveNowReq) string {
 		return "Faulted"
 	case Unavailable:
 		return "Unavailable"
-	case Charging, SuspendedEV, Finishing, Preparing:
+	case Charging, SuspendedEV, SuspendedEVSE, Finishing, Preparing:
 		return "Occupied"
 	}
 	if c.Session != nil || c.Plugged {
