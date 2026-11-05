@@ -18,7 +18,11 @@ import (
 // Config is the declarative identity of one simulated charge point — the
 // "noun" that comes from fleet.yaml. Runtime actions are methods.
 type Config struct {
-	ID         string  `yaml:"id"`
+	ID string `yaml:"id"`
+	// Label is an optional human name for the station ("Garage · 01"). It
+	// is display-only: shown in the API snapshot and the web UI next to the
+	// id, never sent to the CSMS.
+	Label      string  `yaml:"label"`
 	Vendor     string  `yaml:"vendor"`
 	Model      string  `yaml:"model"`
 	Serial     string  `yaml:"serial"`
@@ -650,7 +654,7 @@ func (s *Station) Snapshot() map[string]any {
 		conns = append(conns, entry)
 	}
 	return map[string]any{
-		"id": s.Config.ID, "model": s.Config.Model, "dc": s.Config.DC,
+		"id": s.Config.ID, "label": s.Config.Label, "model": s.Config.Model, "dc": s.Config.DC,
 		"powerKw": s.Config.PowerKw, "online": s.online, "queued": len(s.queue),
 		"connectors": conns,
 	}

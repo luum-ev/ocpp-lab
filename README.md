@@ -107,6 +107,11 @@ only) SoC of each connector. It is a client of the same REST API the CLI uses
 (one embedded file, no build step), so anything you click, CI can replay with
 curl.
 
+Each station card shows its id and, when the fleet file gives one, its
+`label` — an optional, display-only name (`label: Garage · bay 01`) that helps
+tell apart stations whose ids are opaque tokens. The label is never sent to the
+CSMS.
+
 What it has:
 
 * per connector: `plug`, `unplug`, `charge`, `stop` and `fault`;

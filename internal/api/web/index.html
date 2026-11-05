@@ -18,6 +18,7 @@
   .station-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
   .station-head b { font-size: 15px; }
   .tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #3a3f45; color: #aab1b8; }
+  .label { color: #d6dbe0; }
   .tag.ok { color: #46d19a; border-color: #2c5c48; }
   .tag.bad { color: #ff6b6b; border-color: #6b3232; }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid #202327; }
@@ -68,10 +69,16 @@ function connectorRow(stationId, c) {
   </div>`;
 }
 
+// esc keeps fleet-file text (the label) from being read as HTML.
+function esc(text) {
+  return String(text).replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+}
+
 function stationCard(s) {
   return `<section class="station">
     <div class="station-head">
       <b>${s.id}</b>
+      ${s.label ? `<span class="label">${esc(s.label)}</span>` : ''}
       <span class="tag">${s.model}</span>
       <span class="tag">${s.dc ? 'DC' : 'AC'} · ${s.powerKw} kW</span>
       <span class="tag ${s.online ? 'ok' : 'bad'}">${s.online ? 'online' : 'offline'}</span>
