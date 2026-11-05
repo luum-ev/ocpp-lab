@@ -6,6 +6,9 @@ stations:
   # A three-phase AC station: per-phase currents in MeterValues, and NO SoC —
   # a Type 2 cable has no data link to the car, so an AC station cannot know it.
   - id: SIM-AC-001
+    # Optional, display-only: shown next to the id in the web UI and the
+    # API snapshot, never sent to the CSMS.
+    label: Garage · bay 01
     vendor: WEG
     model: WEMOB Parking 22
     serial: WEG22-SIM001

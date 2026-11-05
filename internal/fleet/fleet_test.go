@@ -38,6 +38,14 @@ func TestExampleFleetParsesCompletely(t *testing.T) {
 	if ac.Config.DC || ac.Config.Phases != 3 {
 		t.Fatalf("AC station fields did not bind: %+v", ac.Config)
 	}
+	// The label is display-only, but it must reach the snapshot the web UI
+	// renders — and an unlabeled station must not grow one.
+	if got := ac.Snapshot()["label"]; got != "Garage · bay 01" {
+		t.Fatalf("label did not reach the snapshot: %v", got)
+	}
+	if got := dc.Snapshot()["label"]; got != "" {
+		t.Fatalf("unlabeled station has a label: %v", got)
+	}
 }
 
 func TestCsmsOverrideWins(t *testing.T) {
